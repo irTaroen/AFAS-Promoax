@@ -1,0 +1,9 @@
+# Local dev credentials — never commit
+.env
+
+# Runtime state & logs
+Log/
+work/
+
+# OS cruft
+.DS_Store

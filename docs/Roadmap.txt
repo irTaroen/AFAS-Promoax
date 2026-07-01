@@ -1,0 +1,12 @@
+Add later
+- Logging
+- Email
+- Mapping artikelgroepen
+- Mapping werksoorten
+- Offerte als pdf in dossier van de klant
+
+Questions:
+- Hoe maken jullie een artikel aan? Welke prijs hangen jullie eraan? Kiezen jullie per voorcalculatieregel een afwijkende kostprijs en verkooprpijs?
+- Maken jullie een project aan per voorcalc of per klant? En wordt de voorcalc regel hieraan gekoppeld?
+- Wordt de voorcalc regel gekoppeld aan de forecast?
+- Deletion: wat doen we met verwijderde of geanuleerde forecasts?
