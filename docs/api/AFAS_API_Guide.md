@@ -73,8 +73,24 @@ GET /connectors/{connectorName}
 | `take` | Number of records to return | `100` |
 | `filterfieldids` | Field(s) to filter on | `PrId` |
 | `filtervalues` | Value(s) to filter on | `ACME001` |
-| `operatortypes` | Filter operator (1=equal, 6=contains, etc.) | `1` |
+| `operatortypes` | Filter operator (see table below) | `1` |
 | `orderbyfieldids` | Field(s) to sort by | `DaSt` |
+
+**Operator types** (verified against environment 53307):
+
+| Value | Meaning |
+|---|---|
+| `1` | equal (`=`) |
+| `2` | greater than or equal (`>=`) |
+| `3` | less than or equal (`<=`) |
+| `4` | **greater than (`>`)** — use this for delta sync |
+| `5` | less than (`<`) |
+| `6` | contains |
+| `7` | not equal (`!=`) |
+
+> ⚠️ **Operator 4, not 5, is "greater than".** Operator `5` is *less than*. An earlier version of the sync used `5` for delta and silently returned 0 rows.
+
+> ⚠️ **Datetime filter format:** use `yyyy-MM-ddTHH:mm:ss` in **local** time — e.g. `2026-06-29T00:00:00`. A trailing `Z` (UTC designator) causes a server error (`Conversion from string "0Z" to type 'Integer' is not valid`), and a bare date with no time component also fails.
 
 **Example:**
 
@@ -190,8 +206,8 @@ Authorization: AfasToken {base64_encoded_token}
 ### Filtering
 
 ```http
-# Delta sync — organisations modified after a given date (operator 5 = greater than)
-GET /connectors/Salesbuildr_Organisaties?filterfieldids=Gewijzigd_op&filtervalues=2026-01-01T00:00:00Z&operatortypes=5
+# Delta sync — organisations modified after a given date (operator 4 = greater than; local time, no trailing Z)
+GET /connectors/Salesbuildr_Organisaties?filterfieldids=Gewijzigd_op&filtervalues=2026-01-01T00:00:00&operatortypes=4
 
 # Only active (non-blocked) organisations
 GET /connectors/Salesbuildr_Organisaties?filterfieldids=Geblokkeerd&filtervalues=false&operatortypes=1
@@ -263,8 +279,8 @@ Authorization: AfasToken {base64_encoded_token}
 ### Filtering
 
 ```http
-# Forecasts modified after a specific date (operator 5 = greater than)
-GET /connectors/Salesbuildr_Forecasts?filterfieldids=gewijzigd&filtervalues=2024-01-01T00:00:00Z&operatortypes=5
+# Forecasts modified after a specific date (operator 4 = greater than; local time, no trailing Z)
+GET /connectors/Salesbuildr_Forecasts?filterfieldids=gewijzigd&filtervalues=2024-01-01T00:00:00&operatortypes=4
 
 # Forecasts for a specific customer
 GET /connectors/Salesbuildr_Forecasts?filterfieldids=verkooprelatie&filtervalues=10127&operatortypes=1
@@ -1082,8 +1098,8 @@ GET /connectors/Salesbuildr_Voorcalculatie?filterfieldids=offerte&filtervalues=2
 # Quotations for a specific customer
 GET /connectors/Salesbuildr_Voorcalculatie?filterfieldids=verkooprelatie&filtervalues=10654&operatortypes=1
 
-# Quotations modified after a specific date (operator 5 = greater than)
-GET /connectors/Salesbuildr_Voorcalculatie?filterfieldids=gewijzigd&filtervalues=2026-01-01T00:00:00Z&operatortypes=5
+# Quotations modified after a specific date (operator 4 = greater than; local time, no trailing Z)
+GET /connectors/Salesbuildr_Voorcalculatie?filterfieldids=gewijzigd&filtervalues=2026-01-01T00:00:00&operatortypes=4
 ```
 
 ---
@@ -1307,10 +1323,12 @@ Concrete payloads used by the forecast sync script, as implemented.
 
 ### Filter syntax reminder
 
-Delta sync filters use `operatortypes=5` (greater than) on the `gewijzigd` field:
+Delta sync filters use `operatortypes=4` (**greater than**) on the `gewijzigd` field.
+Note `4` is greater-than; `5` is *less-than*. The datetime value must be local time in
+`yyyy-MM-ddTHH:mm:ss` — a trailing `Z` or a bare date (no time) triggers a server error.
 
 ```
-filterfieldids=gewijzigd&filtervalues=2026-01-01T00:00:00Z&operatortypes=5
+filterfieldids=gewijzigd&filtervalues=2026-01-01T00:00:00&operatortypes=4
 ```
 
 Voorcalculatie idempotency check filters on `offerte` (equals, operator 1):
