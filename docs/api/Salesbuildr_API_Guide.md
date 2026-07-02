@@ -744,7 +744,8 @@ PUT /public-api/opportunity/ext/{externalIdentifier}
 |---|---|---|
 | `forecast` | URL `externalIdentifier` | Integer `SqNo`, becomes `afas-Forecast-{SqNo}` |
 | `forecastOmschrijving` | `name` | |
-| `verkooprelatie` | `companyExtId` | AFAS debtor code; also reused as `PrId` when closing the Forecast |
+| `organisatie` | `companyExtId` | AFAS organisatienummer → `afas-Organisatie-{organisatie}` (matches the org-sync key). Forecast is **skipped + logged** if no such Company exists in Salesbuildr. |
+| `verkooprelatie` | — (Flow 2 only) | AFAS debtor code = `PrId`/`DbId`. **Not** the company key; re-fetched from AFAS by `SqNo` in Flow 2. |
 | `scoringkans` | `probability` | 0–100, no conversion needed |
 | `bedragVerwacht` | `onetimeRevenue` | |
 | `einddatumVerwacht` | `expectedCloseDate` | ISO `yyyy-MM-dd`; only set if not null |
@@ -778,7 +779,7 @@ Response is filtered client-side for the item where `primary: true`.
 ### Close the originating Forecast (`OpportunityResponseDto` → AFAS)
 
 - `externalIdentifier` → parsed to `SqNo` by stripping the `afas-Forecast-` prefix
-- `companyExtId` → `PrId` (the AFAS `verkooprelatie`, part of the Forecast's composite key)
+- `PrId` = the AFAS `verkooprelatie`. This is **not** on the Opportunity (`companyExtId` holds the organisatienummer), so the Forecast is re-fetched from AFAS by `SqNo` (`GET Salesbuildr_Forecasts?filterfieldids=forecast&filtervalues={SqNo}&operatortypes=1`) to read `verkooprelatie`.
 
 See [AFAS_API_Guide.md](AFAS_API_Guide.md) for the resulting `CmForecast`/`KnQuotation`/`FbItemArticle` payloads.
 
