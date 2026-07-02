@@ -49,17 +49,53 @@ function Write-Log {
     }
 }
 
+function Import-DotEnv {
+    # Leest een .env-bestand in als hashtable (KEY -> value).
+    # Splitst op het eerste '='; trimt spaties rond sleutel en waarde
+    # (het .env-bestand gebruikt bijv. 'AFAS_Omgeving = 53307'); negeert
+    # lege regels en #-commentaar; strippt omringende quotes.
+    param([string]$Path)
+
+    $vars = @{}
+    if (-not (Test-Path $Path)) { return $vars }
+
+    foreach ($line in Get-Content -Path $Path -Encoding UTF8) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
+
+        $idx = $trimmed.IndexOf('=')
+        if ($idx -lt 1) { continue }
+
+        $key = $trimmed.Substring(0, $idx).Trim()
+        $val = $trimmed.Substring($idx + 1).Trim()
+
+        if ($val.Length -ge 2 -and
+            (($val[0] -eq '"'  -and $val[-1] -eq '"') -or
+             ($val[0] -eq "'"  -and $val[-1] -eq "'"))) {
+            $val = $val.Substring(1, $val.Length - 2)
+        }
+
+        $vars[$key] = $val
+    }
+
+    return $vars
+}
+
 #endregion
 
 #region ── AFAS ──────────────────────────────────────────────────────────────
 
 function Connect-Afas {
+    # Mode 'TEST' gebruikt de AFAS test-omgeving (resttest.afas.online),
+    # anders de productie-omgeving (rest.afas.online).
     param(
         [string]$Omgeving,
-        [string]$ApiToken
+        [string]$ApiToken,
+        [string]$Mode = 'PROD'
     )
-    $Global:AfasRestUrl = "https://$($Omgeving).rest.afas.online/profitrestservices"
-    $encoded           = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes($ApiToken))
+    $subdomain          = if ($Mode -eq 'TEST') { 'resttest' } else { 'rest' }
+    $Global:AfasRestUrl = "https://$($Omgeving).$subdomain.afas.online/profitrestservices"
+    $encoded            = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes($ApiToken))
     $Global:AfasHeaders = @{ Authorization = "AfasToken $encoded" }
 }
 
@@ -427,27 +463,27 @@ try {
     $LastForecastSync    = If (Test-Path $ForecastStateFile)    { Import-Clixml $ForecastStateFile }    Else { $Epoch }
     $LastOpportunitySync = If (Test-Path $OpportunityStateFile) { Import-Clixml $OpportunityStateFile } Else { $Epoch }
 
-    # Credentials uit config via DPAPI (zelfde structuur als Sync-Afas2Salesbuildr.ps1)
-    # Zodra Configuration.psm1 beschikbaar is, vervangen door:
-    #   $AfasApiToken      = (Get-PSCredential -SecuredCredential $config.afas.api.secured_credential).GetNetworkCredential().Password
-    #   $SalesbuildrApiKey = (Get-PSCredential -SecuredCredential $config.salesbuildr.api.secured_credential).GetNetworkCredential().Password
-    $AfasApiToken = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
-        [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR(
-            $(($config.afas.api.secured_credential.password |
-                Where-Object { $_ } | Select-Object -First 1) |
-                ConvertTo-SecureString)
-        )
-    )
-    $SalesbuildrApiKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
-        [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR(
-            $(($config.salesbuildr.api.secured_credential.password |
-                Where-Object { $_ } | Select-Object -First 1) |
-                ConvertTo-SecureString)
-        )
-    )
+    # Credentials & omgeving uit .env (plaintext, lokale dev — niet committen).
+    # De .env levert AFAS-omgeving + token, Salesbuildr API-key en tenant.
+    # Connector-namen en de Salesbuildr-URL blijven uit config.xml komen.
+    $dotenv = Import-DotEnv -Path "$PSScriptRoot\.env"
 
-    Connect-Afas        -Omgeving $config.afas.omgeving -ApiToken $AfasApiToken
-    Connect-Salesbuildr -Uri $config.salesbuildr.api.url -ApiKey $SalesbuildrApiKey
+    # De decoded token (het <token>…</token> XML) is nodig; Connect-Afas
+    # base64-encodeert die zelf. MODE=TEST schakelt naar resttest.afas.online.
+    $Mode              = $dotenv['MODE']
+    $AfasOmgeving      = $dotenv['AFAS_omgeving']
+    $AfasApiToken      = $dotenv['AFAS_token_decoded']
+    $SalesbuildrApiKey = $dotenv['Salesbuilder_API_Key']
+    $SalesbuildrUrl    = $config.salesbuildr.api.url
+
+    foreach ($k in @('AFAS_omgeving','AFAS_token_decoded','Salesbuilder_API_Key')) {
+        if ([string]::IsNullOrWhiteSpace($dotenv[$k])) {
+            throw "Vereiste .env-variabele ontbreekt of is leeg: $k"
+        }
+    }
+
+    Connect-Afas        -Omgeving $AfasOmgeving -ApiToken $AfasApiToken -Mode $Mode
+    Connect-Salesbuildr -Uri $SalesbuildrUrl -ApiKey $SalesbuildrApiKey
 
     # AFAS connector namen uit config
     $ConnForecastGet    = $config.afas.connectors.forecasts_get        # Salesbuildr_Forecasts
@@ -458,6 +494,7 @@ try {
     $ConnVoorcalcUpdate = $config.afas.connectors.voorcalculatie_update # KnQuotation
 
 
+    <# ══ FLOWS 1 & 2 TEMPORARILY DISABLED — bootstrap-only test ══
     ####################################################################
     # FLOW 1 — AFAS Forecasts → SalesBuildr Opportunities
     ####################################################################
@@ -668,6 +705,7 @@ try {
             }
         }
     }
+    #> # ══ END FLOWS 1 & 2 DISABLED ══
 
 
     ####################################################################

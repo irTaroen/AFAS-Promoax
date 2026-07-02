@@ -225,6 +225,7 @@ Authorization: AfasToken {base64_encoded_token}
       "status": "Gesloten en gescoord",
       "gemaakt": "2013-12-19T14:58:13Z",
       "gewijzigd": "2016-08-08T11:39:16Z",
+      "organisatie": "1000350",
       "verkooprelatie": "10127",
       "verkooprelatieNaam": "Roveg Fruit B.V.",
       "scoringkans": 100,
@@ -248,7 +249,8 @@ Authorization: AfasToken {base64_encoded_token}
 | `status` | string | Human-readable status label | `ViSt` / `ViOp` |
 | `gemaakt` | datetime | Created timestamp | — |
 | `gewijzigd` | datetime | Last modified timestamp | — |
-| `verkooprelatie` | string | Customer account code | `PrId` |
+| `organisatie` | string | AFAS organisation number | — (→ Salesbuildr `companyExtId` as `afas-Organisatie-{organisatie}`) |
+| `verkooprelatie` | string | Customer account code (debtor) | `PrId` |
 | `verkooprelatieNaam` | string | Customer account name | — (joined) |
 | `scoringkans` | integer | Win probability (0–100) | `Pc` × 100 |
 | `bedrag` | decimal | Actual amount | `Am` |
@@ -1330,7 +1332,7 @@ Triggered when a Salesbuildr Opportunity is closed-won; sets `ViOp` (verkoopkans
 }}}}
 ```
 
-`PrId` + `SqNo` form the composite key. `PrId` comes from the Opportunity's `companyExtId` (AFAS debtor code); `SqNo` is parsed by stripping the `afas-Forecast-` prefix off `externalIdentifier`.
+`PrId` + `SqNo` form the composite key. `SqNo` is parsed by stripping the `afas-Forecast-` prefix off the Opportunity's `externalIdentifier`. `PrId` is the AFAS `verkooprelatie` — this is **not** on the Opportunity (its `companyExtId` holds the organisatienummer), so Flow 2 re-fetches the Forecast from AFAS by `SqNo` (`GET Salesbuildr_Forecasts?filterfieldids=forecast&filtervalues={SqNo}&operatortypes=1`) and reads `verkooprelatie` from it. The same value is used as `DbId` on the `KnQuotation` below.
 
 ### Create a Quotation with lines (`KnQuotation`, `POST`)
 
