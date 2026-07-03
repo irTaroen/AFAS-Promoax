@@ -607,10 +607,9 @@ try {
             onetimeRevenue = $Forecast.bedragVerwacht
             # Owner (verantwoordelijke) is VERPLICHT bij de opportunity-upsert
             # ("Either ownerId or ownerExtId is required"). De owner is een SalesBuildr
-            # *user* — niet via e-mail op te zoeken — dus koppelen we op external ID:
-            # de AFAS medewerkercode (verantwoordelijke / EmId). Vereist dat de
-            # SalesBuildr-users die code als externalIdentifier hebben.
-            ownerExtId     = $Forecast.verantwoordelijke
+            # *user*; de GetConnector levert diens interne SalesBuildr user-id direct
+            # aan in 'verantwoordelijkeOwnerID', dus koppelen we op ownerId.
+            ownerId        = $Forecast.verantwoordelijkeOwnerID
         }
         if ($null -ne $ContactId) {
             $SalesbuildrOpportunity.contactId = $ContactId
