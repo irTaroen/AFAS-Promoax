@@ -196,10 +196,13 @@ function Invoke-AfasUpdateConnector {
 function New-AfasArtikel {
     # Maakt een minimaal Artikel aan in AFAS via UpdateConnector FbItemArticle.
     # VaTp "0" = standaard artikel, BiSt false = geen voorraad bijhouden.
+    # Grp = artikelgroep (verplicht: elk artikel hoort bij een groep) — bepaald
+    # uit de Salesbuildr-categorie via de mapping in config.xml.
     param(
         [string]$Connector,
         [string]$ItemCode,
-        [string]$Omschrijving
+        [string]$Omschrijving,
+        [string]$Artikelgroep
     )
 
     $body = @{
@@ -209,6 +212,7 @@ function New-AfasArtikel {
                     ItCd    = $ItemCode
                     Ds      = $Omschrijving
                     Ds_1043 = $Omschrijving
+                    Grp     = $Artikelgroep
                     VaTp    = "0"
                     BiSt    = $false
                     CoLa    = "NL"
@@ -218,8 +222,31 @@ function New-AfasArtikel {
         }
     }
 
-    Write-Log INFO "Artikel aanmaken in AFAS: $ItemCode - $Omschrijving"
+    Write-Log INFO "Artikel aanmaken in AFAS: $ItemCode - $Omschrijving (artikelgroep $Artikelgroep)"
     Invoke-AfasUpdateConnector -Connector $Connector -Body $body
+}
+
+function Get-AfasArtikelgroep {
+    # Vertaalt een Salesbuildr-productcategorie naar een AFAS artikelgroep (Grp) in
+    # twee stappen, want de cost center staat NIET op de quote-regel/category-inline:
+    #   1) category.id  -> costCenterId   (via CategoryCostCenterMap, uit /public-api/category)
+    #   2) costCenterId -> Grp            (via ArtikelgroepMap, uit config.xml)
+    # Geeft $null als de categorie ontbreekt, geen cost center heeft, of die cost
+    # center niet in de config-mapping staat — de aanroeper slaat het artikel dan
+    # over met een WARNING (zie Flow 2 stap 2a).
+    param(
+        $Category,                             # SB category-object ({ id, name, ... }) of $null
+        [hashtable]$CategoryCostCenterMap,     # category.id  -> costCenterId
+        [hashtable]$ArtikelgroepMap            # costCenterId -> Grp
+    )
+
+    if ($null -eq $Category -or [string]::IsNullOrWhiteSpace($Category.id)) { return $null }
+    if (-not $CategoryCostCenterMap.ContainsKey($Category.id))              { return $null }
+
+    $costCenterId = $CategoryCostCenterMap[$Category.id]
+    if ([string]::IsNullOrWhiteSpace($costCenterId))                        { return $null }
+    if ($ArtikelgroepMap.ContainsKey($costCenterId)) { return $ArtikelgroepMap[$costCenterId] }
+    return $null
 }
 
 function Close-AfasForecast {
@@ -343,8 +370,14 @@ function Invoke-SalesbuildrRequest {
 }
 
 function Get-SalesbuildrClosedOpportunities {
-    # Haalt alle Opportunities met statusId 'closed' op via paginering (size/from).
-    # Filtert client-side op updatedAt > $SinceDate (bevestigd veldnaam: updatedAt).
+    # Haalt alle Opportunities met statusId 'closed' op via paginering (size/from)
+    # en filtert client-side op sluitingsdatum closedAt > $SinceDate.
+    #
+    # LET OP — geen server-side datumfilter mogelijk: de SalesBuildr search-API
+    # kent alleen gelijkheidsfilters ('veld:waarde', meerdere waarden met '|'),
+    # geen >/< operatoren. Vandaar het server-side statusId:closed-filter + een
+    # client-side datumfilter. 'closedAt' is de sluitingsdatum (niet 'updatedAt',
+    # dat bij élke wijziging verspringt); records zonder closedAt worden overgeslagen.
     # Paginering: bevestigd via OpenAPI — parameters zijn 'size' en 'from'.
     param([datetime]$SinceDate)
 
@@ -360,8 +393,9 @@ function Get-SalesbuildrClosedOpportunities {
         $from       += $size
     } while ($allResults.Count -lt $response.total)
 
-    # Client-side datumfilter op bevestigd veld 'updatedAt' (OpportunityResponseDto)
-    return $allResults | Where-Object { $_.updatedAt -gt $SinceDate }
+    # Client-side datumfilter op de sluitingsdatum 'closedAt' (OpportunityResponseDto).
+    # Cast naar [datetime] zodat de vergelijking niet afhangt van het string-formaat.
+    return $allResults | Where-Object { $_.closedAt -and ([datetime]$_.closedAt) -gt $SinceDate }
 }
 
 function Get-SalesbuildrCompanyByExtId {
@@ -419,14 +453,55 @@ function Get-SalesbuildrContactByEmail {
         Select-Object -First 1
 }
 
+function Get-SalesbuildrAllQuotes {
+    # Haalt ALLE quotes op (gepagineerd) en cachet ze in $Global:SalesbuildrQuotesCache,
+    # zodat één run niet per opportunity opnieuw de volledige lijst ophaalt.
+    # Reden voor de bulk-fetch: de server-side 'opportunityId'-filter op
+    # /public-api/quote werkt niet (geeft altijd total=0), dus koppelen we
+    # client-side op quote.opportunity.id — zie Get-SalesbuildrPrimaryQuote.
+    if ($null -ne $Global:SalesbuildrQuotesCache) { return $Global:SalesbuildrQuotesCache }
+
+    $all  = @()
+    $size = 100
+    $from = 0
+    do {
+        $response = Invoke-SalesbuildrRequest `
+            -Uri "$($Global:SalesbuildrUri)/public-api/quote?size=$size&from=$from"
+        $all  += $response.results
+        $from += $size
+    } while ($all.Count -lt $response.total)
+
+    Write-Log INFO "$($all.Count) quotes opgehaald en gecachet voor koppeling aan opportunities"
+    $Global:SalesbuildrQuotesCache = $all
+    return $all
+}
+
+function Get-SalesbuildrAllCategories {
+    # Haalt alle product-categorieën op en cachet ze in $Global:SalesbuildrCategoriesCache.
+    # Nodig omdat de cost center (costCenterId) NIET op de quote-regel of het inline
+    # category-object staat, maar op de volledige Category-resource (CategoryResponseDto).
+    # LET OP: /public-api/category geeft een KALE array terug (geen {results,total})
+    # en kent GEEN paginering — één call haalt alles op.
+    if ($null -ne $Global:SalesbuildrCategoriesCache) { return $Global:SalesbuildrCategoriesCache }
+
+    $response = Invoke-SalesbuildrRequest -Uri "$($Global:SalesbuildrUri)/public-api/category"
+    $all = if ($response.results) { $response.results } else { $response }   # defensief
+
+    Write-Log INFO "$(@($all).Count) categorieën opgehaald en gecachet voor cost-center-koppeling"
+    $Global:SalesbuildrCategoriesCache = @($all)
+    return $Global:SalesbuildrCategoriesCache
+}
+
 function Get-SalesbuildrPrimaryQuote {
     # Haalt de primaire Quote op voor een Opportunity.
-    # OpportunityResponseDto bevat GEEN quoteId — quotes worden opgevraagd via
-    # GET /public-api/quote?filters=opportunityId:{id} en gefilterd op primary:true.
+    # OpportunityResponseDto bevat GEEN quoteId, én de server-side opportunityId-filter
+    # op /public-api/quote werkt niet — daarom halen we alle quotes op (gecachet) en
+    # matchen client-side op quote.opportunity.id (bevestigd veldpad: $q.opportunity.id).
     # Bevestigde veldnamen (QuoteResponseDto):
-    #   - items     : array van QuoteItemResponseDto (NIET 'lines')
-    #   - primary   : boolean, true voor de primaire quote
-    #   - status    : string (quote-status, bijv. 'approved')
+    #   - opportunity : { id, name, ... } — koppeling naar de Opportunity
+    #   - items       : array van QuoteItemResponseDto (NIET 'lines')
+    #   - primary     : boolean, true voor de primaire quote van díe opportunity
+    #   - status      : string (quote-status, bijv. 'approved')
     # Bevestigde veldnamen per item (QuoteItemResponseDto):
     #   - name      : productnaam
     #   - quantity  : aantal
@@ -436,22 +511,13 @@ function Get-SalesbuildrPrimaryQuote {
     #   - mpn       : fabrikantcode
     param([string]$OpportunityId)
 
-    $size = 100
-    $from = 0
-    $allQuotes = @()
+    $quotes = Get-SalesbuildrAllQuotes | Where-Object { $_.opportunity.id -eq $OpportunityId }
 
-    do {
-        $response  = Invoke-SalesbuildrRequest `
-            -Uri "$($Global:SalesbuildrUri)/public-api/quote?filters=opportunityId%3A$OpportunityId&size=$size&from=$from"
-        $allQuotes += $response.results
-        $from      += $size
-    } while ($allQuotes.Count -lt $response.total)
-
-    $primary = $allQuotes | Where-Object { $_.primary -eq $true } | Select-Object -First 1
+    $primary = $quotes | Where-Object { $_.primary -eq $true } | Select-Object -First 1
 
     if ($null -eq $primary) {
         # Fallback: geen primaire quote, gebruik de meest recente goedgekeurde
-        $primary = $allQuotes | Where-Object { $_.status -eq 'approved' } |
+        $primary = $quotes | Where-Object { $_.status -eq 'approved' } |
             Sort-Object -Property approvedAt -Descending | Select-Object -First 1
     }
 
@@ -488,7 +554,7 @@ try {
 
     # State files
     $ForecastStateFile     = "$PSScriptRoot\work\LastForecastSyncDate.xml"
-    $OpportunityStateFile  = "$PSScriptRoot\work\LastClosedOpportunitySyncDate.xml"
+    $OpportunityStateFile  = "$PSScriptRoot\work\LastSyncDate_Opportunities.xml"
 
     $Epoch = Get-Date -Date "1-1-1970"
 
@@ -524,6 +590,14 @@ try {
     $ConnArtikelenUpdate = $config.afas.connectors.artikelen_update    # FbItemArticle
     $ConnVoorcalcGet    = $config.afas.connectors.voorcalculatie_get   # Salesbuildr_Voorcalculatie
     $ConnVoorcalcUpdate = $config.afas.connectors.voorcalculatie_update # KnQuotation
+
+    # Mapping Salesbuildr cost center (costCenterId) -> AFAS artikelgroep (Grp), uit
+    # config.xml. Gebruikt in Flow 2 stap 2a bij het aanmaken van ontbrekende artikels.
+    $ArtikelgroepMap = @{}
+    foreach ($c in $config.afas.artikelgroepmapping.costcenter) {
+        if ($c -and -not [string]::IsNullOrWhiteSpace($c.id)) { $ArtikelgroepMap[$c.id] = $c.grp }
+    }
+    Write-Log INFO "$($ArtikelgroepMap.Count) artikelgroep-mapping(s) (cost center -> Grp) geladen uit config"
 
 
     ####################################################################
@@ -638,70 +712,102 @@ try {
     # FLOW 2 — Gesloten SalesBuildr Opportunities → AFAS Voorcalculatieregels
     ####################################################################
 
-    # Write-Log INFO "=== Flow 2: Gesloten Opportunities → AFAS Voorcalculatieregels ==="
-    # Write-Log INFO "Delta sinds: $LastOpportunitySync"
+    Write-Log INFO "=== Flow 2: Gesloten Opportunities → AFAS Voorcalculatieregels ==="
+    Write-Log INFO "Delta sinds: $LastOpportunitySync"
 
-    # $ClosedOpportunities = Get-SalesbuildrClosedOpportunities -SinceDate $LastOpportunitySync
+    $ClosedOpportunities = Get-SalesbuildrClosedOpportunities -SinceDate $LastOpportunitySync
 
-    # Write-Log INFO "$($ClosedOpportunities.Count) gesloten Opportunities gevonden"
+    Write-Log INFO "$($ClosedOpportunities.Count) gesloten Opportunities gevonden"
 
-    # # Batch-watermark voor Flow 2 (zie toelichting bij Flow 1).
-    # $Flow2Complete = $true
+    # Print de opgehaalde Opportunities in de terminal (debug / dry-run inspectie)
+    foreach ($Opportunity in $ClosedOpportunities) {
+        $Opportunity | Format-List | Out-String | Write-Host
+    }
 
-    # # ── Stap 2a: Verzamel alle quotation-items en maak ontbrekende Artikels aan ──
+    # Batch-watermark voor Flow 2 (zie toelichting bij Flow 1).
+    $Flow2Complete = $true
 
-    # $AllQuotationLines = @{}   # OpportunityId → array van quote-regels
+    # ── Stap 2a: Verzamel alle quotation-items en maak ontbrekende Artikels aan ──
 
-    # foreach ($Opportunity in $ClosedOpportunities) {
-    #     # Bevestigd veldnaam: id (OpportunityResponseDto)
-    #     $OpportunityId = $Opportunity.id
+    $AllQuotationLines = @{}   # OpportunityId → array van quote-regels
 
-    #     # Haal de primaire quote op via de quote-endpoint gefilterd op opportunityId.
-    #     # OpportunityResponseDto heeft geen quoteId-veld — dit is de enige manier.
-    #     try {
-    #         $Quote = Get-SalesbuildrPrimaryQuote -OpportunityId $OpportunityId
-    #     } catch {
-    #         Write-Log ERROR "[$OpportunityId] Fout bij ophalen primaire quote: $_"
-    #         $Flow2Complete = $false
-    #         continue
-    #     }
+    foreach ($Opportunity in $ClosedOpportunities) {
+        # Bevestigd veldnaam: id (OpportunityResponseDto)
+        $OpportunityId = $Opportunity.id
 
-    #     if ($null -eq $Quote) {
-    #         Write-Log WARNING "[$OpportunityId] Geen primaire of goedgekeurde quote gevonden — opportunity overgeslagen"
-    #         $Flow2Complete = $false
-    #         continue
-    #     }
+        # Haal de primaire quote op via de quote-endpoint gefilterd op opportunityId.
+        # OpportunityResponseDto heeft geen quoteId-veld — dit is de enige manier.
+        try {
+            $Quote = Get-SalesbuildrPrimaryQuote -OpportunityId $OpportunityId
+        } catch {
+            Write-Log ERROR "[$OpportunityId] Fout bij ophalen primaire quote: $_"
+            $Flow2Complete = $false
+            continue
+        }
 
-    #     # Bevestigd veldnaam: items (QuoteResponseDto) — NIET 'lines'
-    #     $Lines = $Quote.items
-    #     $AllQuotationLines[$OpportunityId] = $Lines
-    # }
+        if ($null -eq $Quote) {
+            Write-Log WARNING "[$OpportunityId] Geen primaire of goedgekeurde quote gevonden — opportunity overgeslagen"
+            $Flow2Complete = $false
+            continue
+        }
 
-    # # Unieke product external identifiers over alle opportunities heen.
-    # # QuoteItemResponseDto heeft geen 'itemCode' veld — identifier zit op product.externalIdentifier.
-    # # TODO: implementeer de custom itemcode-logica zodra die bekend is.
-    # #       Voorlopig wordt product.externalIdentifier als identifier gebruikt.
+        # Bevestigd veldnaam: items (QuoteResponseDto) — NIET 'lines'
+        $Lines = $Quote.items
+        $AllQuotationLines[$OpportunityId] = $Lines
+
+        # Print de opgehaalde quote + regels ter inspectie (debug / dry-run)
+        Write-Log INFO "[$OpportunityId] Primaire quote gevonden: $($Lines.Count) regel(s)"
+        $Quote | Format-List | Out-String | Write-Host
+        $Lines | Format-List | Out-String | Write-Host
+    }
+
+    # # Unieke artikelcodes over alle opportunities heen. De AFAS itemcode (ItCd) is
+    # # ALTIJD de 'mpn' van de quote-regel — het 'product'-veld kan leeg zijn (vrije
+    # # regel), dus daar mag niet op vertrouwd worden. Regels zonder mpn worden
+    # # overgeslagen (geen artikelcode -> niet aan te maken/te koppelen).
     # $AllItemCodes = $AllQuotationLines.Values | ForEach-Object { $_ } |
-    #     ForEach-Object { $_.product.externalIdentifier } |
+    #     ForEach-Object { $_.mpn } |
     #     Where-Object { $_ } | Sort-Object -Unique
 
-    # Write-Log INFO "$($AllItemCodes.Count) unieke artikelcodes gevonden in quotations"
+    # Write-Log INFO "$($AllItemCodes.Count) unieke artikelcodes (mpn) gevonden in quotations"
 
     # # Bevestigd veldnaam in Salesbuildr_Artikelen: 'itemCode' (maps to FbItemArticle.ItCd)
     # $BestaandeArtikels  = Invoke-AfasGetConnector -Connector $ConnArtikelenGet
     # $BestaandeItemCodes = $BestaandeArtikels | ForEach-Object { $_.itemCode }
 
+    # # category.id -> costCenterId, uit de (gecachte) SB-categorieën. Nodig om per
+    # # artikel de AFAS-artikelgroep (Grp) te bepalen (zie Get-AfasArtikelgroep).
+    # $CategoryCostCenterMap = @{}
+    # foreach ($cat in Get-SalesbuildrAllCategories) {
+    #     if ($cat.id) { $CategoryCostCenterMap[$cat.id] = $cat.costCenterId }
+    # }
+
+    # # mpn's waarvoor geen artikelgroep bepaald kon worden -> in stap 2b wordt de
+    # # hele opportunity overgeslagen (anders wijst de voorcalc-regel naar een
+    # # niet-bestaand artikel). Zie de skip-logica in stap 2b.
+    # $FailedItemCodes = @()
+
     # foreach ($ItemCode in $AllItemCodes) {
     #     $ArtikelBestaat = $BestaandeItemCodes -contains $ItemCode
 
     #     If (-Not $ArtikelBestaat) {
-    #         # Bevestigd veldnaam: name (QuoteItemResponseDto) — NIET 'description'
-    #         $Omschrijving = ($AllQuotationLines.Values | ForEach-Object { $_ } |
-    #             Where-Object { $_.product.externalIdentifier -eq $ItemCode } |
-    #             Select-Object -First 1).name
+    #         # Bronregel voor de omschrijving (name) én de categorie (voor de artikelgroep).
+    #         $BronRegel = $AllQuotationLines.Values | ForEach-Object { $_ } |
+    #             Where-Object { $_.mpn -eq $ItemCode } | Select-Object -First 1
+
+    #         # Artikelgroep (Grp) bepalen: category.id -> costCenterId -> Grp.
+    #         $Artikelgroep = Get-AfasArtikelgroep -Category $BronRegel.category `
+    #             -CategoryCostCenterMap $CategoryCostCenterMap -ArtikelgroepMap $ArtikelgroepMap
+    #         If ([string]::IsNullOrWhiteSpace($Artikelgroep)) {
+    #             Write-Log WARNING "Artikel [$ItemCode] overgeslagen: cost center voor categorie '$($BronRegel.category.name)' (id $($BronRegel.category.id)) niet in artikelgroep-mapping"
+    #             $FailedItemCodes += $ItemCode
+    #             $Flow2Complete = $false
+    #             continue
+    #         }
 
     #         try {
-    #             New-AfasArtikel -Connector $ConnArtikelenUpdate -ItemCode $ItemCode -Omschrijving $Omschrijving
+    #             New-AfasArtikel -Connector $ConnArtikelenUpdate -ItemCode $ItemCode `
+    #                 -Omschrijving $BronRegel.name -Artikelgroep $Artikelgroep
     #         } catch {
     #             Write-Log ERROR "Fout bij aanmaken Artikel [$ItemCode]: $_"
     #             $Flow2Complete = $false
@@ -737,12 +843,30 @@ try {
 
     #     $Lines = $AllQuotationLines[$OpportunityId]
 
+    #     # Kon één van de artikels niet aangemaakt worden (cost center niet gemapt),
+    #     # dan slaan we de HELE opportunity over: een voorcalc met een ontbrekende
+    #     # regel zou naar een niet-bestaand artikel wijzen. Watermerk blijft staan,
+    #     # zodat de opportunity opnieuw wordt geprobeerd na het aanvullen van de mapping.
+    #     $OntbrekendeCodes = @($Lines | Where-Object { $FailedItemCodes -contains $_.mpn } |
+    #         ForEach-Object { $_.mpn } | Sort-Object -Unique)
+    #     If ($OntbrekendeCodes.Count -gt 0) {
+    #         Write-Log WARNING "[$OpportunityId] Overgeslagen: artikel(en) $($OntbrekendeCodes -join ', ') niet aangemaakt (cost center niet gemapt)"
+    #         $Flow2Complete = $false
+    #         continue
+    #     }
+
     #     $Regels = @()
     #     foreach ($Line in $Lines) {
+    #         # De AFAS itemcode (ItCd) is ALTIJD de mpn. Regels zonder mpn hebben
+    #         # geen artikelkoppeling en worden overgeslagen.
+    #         If ([string]::IsNullOrWhiteSpace($Line.mpn)) {
+    #             Write-Log WARNING "[$OpportunityId] Quote-regel '$($Line.name)' zonder mpn — overgeslagen (geen artikelcode)"
+    #             continue
+    #         }
     #         $Regels += @{
     #             # SalesBuildr-zijdige veldnamen bevestigd via QuoteItemResponseDto:
-    #             # 'product.externalIdentifier' = AFAS itemcode, 'name', 'quantity', 'price'
-    #             ItemCode     = $Line.product.externalIdentifier
+    #             # 'mpn' = AFAS itemcode (ItCd), 'name', 'quantity', 'price'
+    #             ItemCode     = $Line.mpn
     #             Omschrijving = $Line.name
     #             Aantal       = $Line.quantity
     #             Prijs        = $Line.price

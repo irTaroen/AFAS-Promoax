@@ -7,7 +7,7 @@
 - Ensure `work/` dir exists — creates it if missing (:417-419).
 - Read the two watermark state files (:422-428):
   - `LastForecastSyncDate.xml` → `$LastForecastSync` (Flow 1)
-  - `LastClosedOpportunitySyncDate.xml` → `$LastOpportunitySync` (Flow 2)
+  - `LastSyncDate_Opportunities.xml` → `$LastOpportunitySync` (Flow 2)
   - Both default to the Unix epoch (1970) on first run, so an initial run pulls everything.
 - Decrypt credentials from the DPAPI-encrypted blobs in config (:434-447) — AFAS token and Salesbuildr API key. (Marked as temporary until `Configuration.psm1` is wired in.)
 - Connect to both APIs (:449-450):
@@ -51,7 +51,7 @@
 
 - Advance each watermark independently, but only if its flag is still true:
   - `$Flow1Complete` → write current date to `LastForecastSyncDate.xml` (:680-685).
-  - `$Flow2Complete` → write current date to `LastClosedOpportunitySyncDate.xml` (:687-692).
+  - `$Flow2Complete` → write current date to `LastSyncDate_Opportunities.xml` (:687-692).
 - If a flag is false, the date is held so the next run retries the unprocessed records.
 
 ## Error handling (lines 694–696)

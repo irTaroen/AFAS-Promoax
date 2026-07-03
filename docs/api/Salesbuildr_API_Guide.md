@@ -761,24 +761,37 @@ PUT /public-api/opportunity/ext/{externalIdentifier}
 GET /public-api/opportunity?filters=statusId:closed&size={n}&from={offset}
 ```
 
-Paginated via `size`/`from`. Delta-tracked via the `LastClosedOpportunitySyncDate.xml` state file (`work/`).
+Paginated via `size`/`from`. The `filters` parameter is **equality-only** (`field:value`, multiple values OR'd with `|`) — there are **no comparison/range operators**, so the close-date delta cannot be filtered server-side. The delta is therefore applied **client-side** on `closedAt > SinceDate` (not `updatedAt`, which moves on any edit); opportunities without a `closedAt` are skipped. Delta-tracked via the `LastSyncDate_Opportunities.xml` state file (`work/`).
 
 ### Fetch the primary quote for a closed Opportunity
 
 ```
-GET /public-api/quote?filters=opportunityId:{id}
+GET /public-api/quote?size=100&from={offset}
 ```
 
-Response is filtered client-side for the item where `primary: true`.
+> ⚠️ **The `opportunityId` filter does not work.** Despite being the documented example (`filters=statusId:approved,opportunityId:opp123`), `GET /public-api/quote?filters=opportunityId:{id}` returns `total: 0` on the Promax tenant even when a matching quote exists. So the sync **fetches all quotes once** (paginated, cached in `$Global:SalesbuildrQuotesCache` for the run) and matches **client-side on `quote.opportunity.id`**. The quote→opportunity link lives in `QuoteResponseDto.opportunity` (`{ id, name, ... }`).
+
+Among the matched quotes, the one with `primary: true` is used (fallback: most recent `status: "approved"` by `approvedAt`). Note: `primary` is **per-opportunity** — every quote reports `primary: true` for its own opportunity — so it only disambiguates once the set is already narrowed to a single opportunity.
 
 ### Quote line → AFAS `KnQuotationLine`
 
 | Salesbuildr field (`QuoteItemResponseDto`) | AFAS field | Notes |
 |---|---|---|
-| `product.externalIdentifier` | `ItCd` | Item code — see open TODO in [AFAS_API_Guide.md](AFAS_API_Guide.md) |
+| `mpn` | `ItCd` | Item code — **always** the `mpn`, for both article lookup and creation. `product` is **nullable** (free-form lines have no catalog product) so it is **not** used. Lines without an `mpn` are skipped. |
 | `name` | `description` | |
 | `quantity` | `Qu` | |
 | `price` | `UP` | **Not** `unitPrice` |
+| `category` → cost center | `Grp` (article group) | See below — set only when the article is **created** (`FbItemArticle`), not on the quote line. |
+
+### Article group (`Grp`) via cost center
+
+When a missing article is created in AFAS (Flow 2 step 2a), its **artikelgroep** (`FbItemArticle.Grp`) is required and comes from the Salesbuildr **cost center** — resolved in two hops, because the cost center is **not** on the quote item:
+
+1. `QuoteItemResponseDto.category` gives only `{ id, name }` — **no** cost center.
+2. `costCenterId` lives on the full **Category** resource (`CategoryResponseDto.costCenterId`), fetched via `GET /public-api/category` (a **bare array**, no pagination, cached per run).
+3. `config.xml` `<artikelgroepmapping><costcenter id="{costCenterId}" grp="{Grp}"/>` maps the cost center to the AFAS group.
+
+So: quote line `category.id` → category's `costCenterId` → `Grp`. A cost center missing from the config mapping causes the article **and its whole opportunity** to be skipped (WARNING, watermark held for retry). ⚠️ The API exposes only `costCenterId` (an id) — there is **no** cost-center name/label endpoint, so the config keys are opaque ids (label them in comments).
 
 ### Close the originating Forecast (`OpportunityResponseDto` → AFAS)
 

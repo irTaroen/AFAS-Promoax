@@ -577,7 +577,7 @@ Authorization: AfasToken {base64_encoded_token}
 | `typeOmschrijving` | string | Type label | — (derived) |
 | `itemCode` | string | Article/item code (primary key) | `ItCd` |
 | `itemOmschrijving` | string | Description | `Ds_1043` (Dutch) |
-| `artikelgroep` | string\|null | Article group code | `ItGr` |
+| `artikelgroep` | string\|null | Article group code | `Grp` (the `FbItemArticle` write field for article group; the read connector surfaces it as `artikelgroep`) |
 
 ### Type Values
 
@@ -1385,11 +1385,13 @@ Created on demand when a quote line references an item code not yet present in A
 ```json
 { "FbItemArticle": { "Element": { "Fields": {
     "ItCd": "...", "Ds": "...", "Ds_1043": "...",
-    "VaTp": "0", "BiSt": false, "CoLa": "NL", "Bl": false
+    "Grp": "...", "VaTp": "0", "BiSt": false, "CoLa": "NL", "Bl": false
 }}}}
 ```
 
-> **Open TODO:** `ItCd` is currently set directly from the Salesbuildr quote item's `product.externalIdentifier`. The real Promax item-code generation logic still needs to be implemented — see `New-AfasArtikel` and the `$Regels` construction in Flow 2 step 2b (`Sync-Afas2Salesbuildr-Forecasts.ps1` ~line 515).
+> **Promax item code + article group:**
+> - `ItCd` = the Salesbuildr quote line's **`mpn`** (always — the `product` field is nullable). Lines without an `mpn` are skipped.
+> - `Grp` (artikelgroep, **required**) is derived from the Salesbuildr **cost center**, resolved in two hops: quote line `category.id` → `GET /public-api/category` → `costCenterId` → config mapping (`<artikelgroepmapping><costcenter>` in `config.xml`) → `Grp`. A cost center that isn't mapped causes the article — and its whole opportunity — to be skipped with a WARNING (watermark held for retry). See `Get-AfasArtikelgroep` / `New-AfasArtikel` and Flow 2 step 2a.
 
 ---
 
