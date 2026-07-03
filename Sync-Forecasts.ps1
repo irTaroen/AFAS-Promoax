@@ -394,6 +394,31 @@ function Get-SalesbuildrOpportunityByExtId {
     }
 }
 
+function Get-SalesbuildrContactByEmail {
+    # Zoekt een Contact in SalesBuildr op e-mailadres.
+    # De /public-api/contact search-endpoint accepteert een vrije-tekst 'query'
+    # parameter; die kan ook op andere velden matchen, dus filteren we het
+    # resultaat client-side op een exacte (case-insensitieve) match van 'email'.
+    # Geeft de ContactResponseDto terug, of $null als er geen exacte match is.
+    #
+    # LET OP: dit werkt alleen voor de KLANT-contactpersoon (contactId/contactExtId
+    # op de Opportunity). De verantwoordelijke (owner) is een SalesBuildr *user*,
+    # geen Contact — die is NIET via deze endpoint op te zoeken.
+    param([string]$Email)
+
+    if ([string]::IsNullOrWhiteSpace($Email)) { return $null }
+
+    $encoded  = [uri]::EscapeDataString($Email)
+    $response = Invoke-SalesbuildrRequest `
+        -Uri "$($Global:SalesbuildrUri)/public-api/contact?query=$encoded&size=100"
+
+    # De search-endpoint kan zowel een kale array als een {results:[]} object geven.
+    $contacts = if ($response.results) { $response.results } else { $response }
+
+    return $contacts | Where-Object { $_.email -and $_.email.ToLower() -eq $Email.ToLower() } |
+        Select-Object -First 1
+}
+
 function Get-SalesbuildrPrimaryQuote {
     # Haalt de primaire Quote op voor een Opportunity.
     # OpportunityResponseDto bevat GEEN quoteId — quotes worden opgevraagd via
@@ -558,12 +583,37 @@ try {
             continue
         }
 
+        # Klant-contactpersoon: opzoeken in SalesBuildr op e-mailadres.
+        # 'contactpersoonMail' is de veldnaam uit de Salesbuildr_Forecasts GetConnector.
+        # Contact is optioneel: geen match -> waarschuwen en Opportunity zónder
+        # contact upserten (Forecast wordt NIET overgeslagen).
+        $ContactId = $null
+        $ContactEmail = $Forecast.contactpersoonMail
+        if (-not [string]::IsNullOrWhiteSpace($ContactEmail)) {
+            $Contact = Get-SalesbuildrContactByEmail -Email $ContactEmail
+            if ($null -ne $Contact) {
+                $ContactId = $Contact.id
+                Write-Log INFO "[$($Forecast.forecastOmschrijving)] Contact gevonden op $ContactEmail (id: $ContactId)"
+            } else {
+                Write-Log WARNING "[$($Forecast.forecastOmschrijving)] Geen SalesBuildr-contact gevonden op e-mail '$ContactEmail' — Opportunity wordt zonder contact opgeslagen"
+            }
+        }
+
         $SalesbuildrOpportunity = @{
             # externalIdentifier wordt meegegeven via de URL, NIET in de body (UpsertOpportunityDto)
             name           = $Forecast.forecastOmschrijving
             companyExtId   = $CompanyExtId
             probability    = $Forecast.scoringkans
             onetimeRevenue = $Forecast.bedragVerwacht
+            # Owner (verantwoordelijke) is VERPLICHT bij de opportunity-upsert
+            # ("Either ownerId or ownerExtId is required"). De owner is een SalesBuildr
+            # *user* — niet via e-mail op te zoeken — dus koppelen we op external ID:
+            # de AFAS medewerkercode (verantwoordelijke / EmId). Vereist dat de
+            # SalesBuildr-users die code als externalIdentifier hebben.
+            ownerExtId     = $Forecast.verantwoordelijke
+        }
+        if ($null -ne $ContactId) {
+            $SalesbuildrOpportunity.contactId = $ContactId
         }
         if ($null -ne $Forecast.einddatumVerwacht) {
             $SalesbuildrOpportunity.expectedCloseDate = ([datetime]$Forecast.einddatumVerwacht).ToString("yyyy-MM-dd")
@@ -575,12 +625,12 @@ try {
         Write-Log INFO "PUT /public-api/opportunity/ext/$ExternalId"
         Write-Host ($SalesbuildrOpportunity | ConvertTo-Json -Depth 5)
 
-        # try {
-        #     Invoke-SalesbuildrUpsertOpportunity -ExternalId $ExternalId -Body $SalesbuildrOpportunity
-        # } catch {
-        #     Write-Log ERROR "[$($Forecast.forecastOmschrijving)] Fout bij upsert Opportunity: $_"
-        #     $Flow1Complete = $false
-        # }
+        try {
+            Invoke-SalesbuildrUpsertOpportunity -ExternalId $ExternalId -Body $SalesbuildrOpportunity
+        } catch {
+            Write-Log ERROR "[$($Forecast.forecastOmschrijving)] Fout bij upsert Opportunity: $_"
+            $Flow1Complete = $false
+        }
     }
     
 
