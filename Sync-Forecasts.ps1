@@ -530,107 +530,107 @@ try {
     # FLOW 1 — AFAS Forecasts → SalesBuildr Opportunities
     ####################################################################
 
-    Write-Log INFO "=== Flow 1: AFAS Forecasts → SalesBuildr Opportunities ==="
-    Write-Log INFO "Delta sinds: $LastForecastSync"
+    # Write-Log INFO "=== Flow 1: AFAS Forecasts → SalesBuildr Opportunities ==="
+    # Write-Log INFO "Delta sinds: $LastForecastSync"
 
-    $AfasForecasts = Invoke-AfasGetConnectorFiltered `
-        -Connector $ConnForecastGet `
-        -SinceDate $LastForecastSync
+    # $AfasForecasts = Invoke-AfasGetConnectorFiltered `
+    #     -Connector $ConnForecastGet `
+    #     -SinceDate $LastForecastSync
 
-    Write-Log INFO "$($AfasForecasts.Count) gewijzigde Forecasts gevonden"
+    # Write-Log INFO "$($AfasForecasts.Count) gewijzigde Forecasts gevonden"
 
-    # Batch-watermark: alleen als élke Forecast succesvol is verwerkt (of legitiem
-    # overgeslagen omdat al gesloten) schuift de sync-datum op. Overgeslagen door een
-    # ontbrekende organisatie of een fout -> datum blijft staan, zodat de volgende run
-    # het opnieuw probeert. Aanname: fouten worden binnen 48u opgelost (zie email-log).
-    $Flow1Complete = $true
+    # # Batch-watermark: alleen als élke Forecast succesvol is verwerkt (of legitiem
+    # # overgeslagen omdat al gesloten) schuift de sync-datum op. Overgeslagen door een
+    # # ontbrekende organisatie of een fout -> datum blijft staan, zodat de volgende run
+    # # het opnieuw probeert. Aanname: fouten worden binnen 48u opgelost (zie email-log).
+    # $Flow1Complete = $true
 
-    foreach ($Forecast in $AfasForecasts) {
+    # foreach ($Forecast in $AfasForecasts) {
 
-        # Print de opgehaalde Forecast in de terminal
-        $Forecast | Format-List | Out-String | Write-Host
+    #     # Print de opgehaalde Forecast in de terminal
+    #     $Forecast | Format-List | Out-String | Write-Host
 
-        # Bevestigde veldnamen (Salesbuildr_Forecasts GetConnector):
-        # 'forecast'       = integer SqNo (primary key), 'forecastOmschrijving' = naam
-        # 'organisatie'    = AFAS Organisatienummer -> koppeling naar SB Company
-        # 'verkooprelatie' = AFAS debiteurcode (= PrId in CmForecast) — NIET voor companyExtId
-        $ForecastSqNo = $Forecast.forecast
-        $ExternalId   = "afas-Forecast-$ForecastSqNo"
+    #     # Bevestigde veldnamen (Salesbuildr_Forecasts GetConnector):
+    #     # 'forecast'       = integer SqNo (primary key), 'forecastOmschrijving' = naam
+    #     # 'organisatie'    = AFAS Organisatienummer -> koppeling naar SB Company
+    #     # 'verkooprelatie' = AFAS debiteurcode (= PrId in CmForecast) — NIET voor companyExtId
+    #     $ForecastSqNo = $Forecast.forecast
+    #     $ExternalId   = "afas-Forecast-$ForecastSqNo"
 
-        # Company-koppeling: de org-sync schrijft companies weg als
-        # "afas-Organisatie-{organisatienummer}". Dit is dezelfde sleutel.
-        $CompanyExtId = "afas-Organisatie-$($Forecast.organisatie)"
+    #     # Company-koppeling: de org-sync schrijft companies weg als
+    #     # "afas-Organisatie-{organisatienummer}". Dit is dezelfde sleutel.
+    #     $CompanyExtId = "afas-Organisatie-$($Forecast.organisatie)"
 
-        # Print de CompanyExtId
-        Write-Log INFO "[$($Forecast.forecastOmschrijving)] CompanyExtId: $CompanyExtId"
+    #     # Print de CompanyExtId
+    #     Write-Log INFO "[$($Forecast.forecastOmschrijving)] CompanyExtId: $CompanyExtId"
 
 
-        # Controleer of de Company bestaat in SalesBuildr. Zo niet, dan is de
-        # organisatie (nog) niet gesynchroniseerd -> loggen en overslaan.
-        # TODO: deze waarschuwingen ook opnemen in de notificatie-email (zie Roadmap).
-        $Company = Get-SalesbuildrCompanyByExtId -ExternalId $CompanyExtId
-        If ($null -eq $Company) {
-            Write-Log WARNING "[$($Forecast.forecastOmschrijving)] Organisatie $($Forecast.organisatie) niet gevonden in SalesBuildr ($CompanyExtId) — Forecast overgeslagen"
-            $Flow1Complete = $false
-            continue
-        }
-        Write-Log INFO "[$($Forecast.forecastOmschrijving)] Company bestaat al in SalesBuildr ($CompanyExtId)"
+    #     # Controleer of de Company bestaat in SalesBuildr. Zo niet, dan is de
+    #     # organisatie (nog) niet gesynchroniseerd -> loggen en overslaan.
+    #     # TODO: deze waarschuwingen ook opnemen in de notificatie-email (zie Roadmap).
+    #     $Company = Get-SalesbuildrCompanyByExtId -ExternalId $CompanyExtId
+    #     If ($null -eq $Company) {
+    #         Write-Log WARNING "[$($Forecast.forecastOmschrijving)] Organisatie $($Forecast.organisatie) niet gevonden in SalesBuildr ($CompanyExtId) — Forecast overgeslagen"
+    #         $Flow1Complete = $false
+    #         continue
+    #     }
+    #     Write-Log INFO "[$($Forecast.forecastOmschrijving)] Company bestaat al in SalesBuildr ($CompanyExtId)"
 
-        # Sla over als de Opportunity al gesloten is in SalesBuildr
-        $ExistingOpportunity = Get-SalesbuildrOpportunityByExtId -ExternalId $ExternalId
-        If ($null -ne $ExistingOpportunity -and $ExistingOpportunity.statusId -eq "closed") {
-            Write-Log INFO "[$($Forecast.forecastOmschrijving)] Opportunity al gesloten in SalesBuildr ($ExternalId) — overgeslagen"
-            continue
-        }
+    #     # Sla over als de Opportunity al gesloten is in SalesBuildr
+    #     $ExistingOpportunity = Get-SalesbuildrOpportunityByExtId -ExternalId $ExternalId
+    #     If ($null -ne $ExistingOpportunity -and $ExistingOpportunity.statusId -eq "closed") {
+    #         Write-Log INFO "[$($Forecast.forecastOmschrijving)] Opportunity al gesloten in SalesBuildr ($ExternalId) — overgeslagen"
+    #         continue
+    #     }
 
-        # Klant-contactpersoon: opzoeken in SalesBuildr op e-mailadres.
-        # 'contactpersoonMail' is de veldnaam uit de Salesbuildr_Forecasts GetConnector.
-        # Contact is optioneel: geen match -> waarschuwen en Opportunity zónder
-        # contact upserten (Forecast wordt NIET overgeslagen).
-        $ContactId = $null
-        $ContactEmail = $Forecast.contactpersoonMail
-        if (-not [string]::IsNullOrWhiteSpace($ContactEmail)) {
-            $Contact = Get-SalesbuildrContactByEmail -Email $ContactEmail
-            if ($null -ne $Contact) {
-                $ContactId = $Contact.id
-                Write-Log INFO "[$($Forecast.forecastOmschrijving)] Contact gevonden op $ContactEmail (id: $ContactId)"
-            } else {
-                Write-Log WARNING "[$($Forecast.forecastOmschrijving)] Geen SalesBuildr-contact gevonden op e-mail '$ContactEmail' — Opportunity wordt zonder contact opgeslagen"
-            }
-        }
+    #     # Klant-contactpersoon: opzoeken in SalesBuildr op e-mailadres.
+    #     # 'contactpersoonMail' is de veldnaam uit de Salesbuildr_Forecasts GetConnector.
+    #     # Contact is optioneel: geen match -> waarschuwen en Opportunity zónder
+    #     # contact upserten (Forecast wordt NIET overgeslagen).
+    #     $ContactId = $null
+    #     $ContactEmail = $Forecast.contactpersoonMail
+    #     if (-not [string]::IsNullOrWhiteSpace($ContactEmail)) {
+    #         $Contact = Get-SalesbuildrContactByEmail -Email $ContactEmail
+    #         if ($null -ne $Contact) {
+    #             $ContactId = $Contact.id
+    #             Write-Log INFO "[$($Forecast.forecastOmschrijving)] Contact gevonden op $ContactEmail (id: $ContactId)"
+    #         } else {
+    #             Write-Log WARNING "[$($Forecast.forecastOmschrijving)] Geen SalesBuildr-contact gevonden op e-mail '$ContactEmail' — Opportunity wordt zonder contact opgeslagen"
+    #         }
+    #     }
 
-        $SalesbuildrOpportunity = @{
-            # externalIdentifier wordt meegegeven via de URL, NIET in de body (UpsertOpportunityDto)
-            name           = $Forecast.forecastOmschrijving
-            companyExtId   = $CompanyExtId
-            probability    = $Forecast.scoringkans
-            onetimeRevenue = $Forecast.bedragVerwacht
-            # Owner (verantwoordelijke) is VERPLICHT bij de opportunity-upsert
-            # ("Either ownerId or ownerExtId is required"). De owner is een SalesBuildr
-            # *user*; de GetConnector levert diens interne SalesBuildr user-id direct
-            # aan in 'verantwoordelijkeOwnerID', dus koppelen we op ownerId.
-            ownerId        = $Forecast.verantwoordelijkeOwnerID
-        }
-        if ($null -ne $ContactId) {
-            $SalesbuildrOpportunity.contactId = $ContactId
-        }
-        if ($null -ne $Forecast.einddatumVerwacht) {
-            $SalesbuildrOpportunity.expectedCloseDate = ([datetime]$Forecast.einddatumVerwacht).ToString("yyyy-MM-dd")
-        }
+    #     $SalesbuildrOpportunity = @{
+    #         # externalIdentifier wordt meegegeven via de URL, NIET in de body (UpsertOpportunityDto)
+    #         name           = $Forecast.forecastOmschrijving
+    #         companyExtId   = $CompanyExtId
+    #         probability    = $Forecast.scoringkans
+    #         onetimeRevenue = $Forecast.bedragVerwacht
+    #         # Owner (verantwoordelijke) is VERPLICHT bij de opportunity-upsert
+    #         # ("Either ownerId or ownerExtId is required"). De owner is een SalesBuildr
+    #         # *user*; de GetConnector levert diens interne SalesBuildr user-id direct
+    #         # aan in 'verantwoordelijkeOwnerID', dus koppelen we op ownerId.
+    #         ownerId        = $Forecast.verantwoordelijkeOwnerID
+    #     }
+    #     if ($null -ne $ContactId) {
+    #         $SalesbuildrOpportunity.contactId = $ContactId
+    #     }
+    #     if ($null -ne $Forecast.einddatumVerwacht) {
+    #         $SalesbuildrOpportunity.expectedCloseDate = ([datetime]$Forecast.einddatumVerwacht).ToString("yyyy-MM-dd")
+    #     }
 
-        Write-Log INFO "Opportunity upsert in SalesBuildr: $($Forecast.forecastOmschrijving)"
+    #     Write-Log INFO "Opportunity upsert in SalesBuildr: $($Forecast.forecastOmschrijving)"
 
-        # Payload printen i.p.v. versturen (dry-run). Zelfde serialisatie als de echte call.
-        Write-Log INFO "PUT /public-api/opportunity/ext/$ExternalId"
-        Write-Host ($SalesbuildrOpportunity | ConvertTo-Json -Depth 5)
+    #     # Payload printen i.p.v. versturen (dry-run). Zelfde serialisatie als de echte call.
+    #     Write-Log INFO "PUT /public-api/opportunity/ext/$ExternalId"
+    #     Write-Host ($SalesbuildrOpportunity | ConvertTo-Json -Depth 5)
 
-        try {
-            Invoke-SalesbuildrUpsertOpportunity -ExternalId $ExternalId -Body $SalesbuildrOpportunity
-        } catch {
-            Write-Log ERROR "[$($Forecast.forecastOmschrijving)] Fout bij upsert Opportunity: $_"
-            $Flow1Complete = $false
-        }
-    }
+    #     try {
+    #         Invoke-SalesbuildrUpsertOpportunity -ExternalId $ExternalId -Body $SalesbuildrOpportunity
+    #     } catch {
+    #         Write-Log ERROR "[$($Forecast.forecastOmschrijving)] Fout bij upsert Opportunity: $_"
+    #         $Flow1Complete = $false
+    #     }
+    # }
     
 
 

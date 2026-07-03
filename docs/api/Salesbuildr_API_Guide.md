@@ -749,7 +749,11 @@ PUT /public-api/opportunity/ext/{externalIdentifier}
 | `scoringkans` | `probability` | 0–100, no conversion needed |
 | `bedragVerwacht` | `onetimeRevenue` | |
 | `einddatumVerwacht` | `expectedCloseDate` | ISO `yyyy-MM-dd`; only set if not null |
+| `verantwoordelijkeOwnerID` | `ownerId` | **Required** by the upsert (`"Either ownerId or ownerExtId is required"`). The GetConnector resolves the responsible AFAS employee to their internal Salesbuildr **user id** and returns it directly — sent as-is, no ext-id mapping. |
+| `contactpersoonMail` | `contactId` (resolved) | Client contact e-mail. Looked up via `GET /public-api/contact?query={email}` and matched on exact `email`; the found contact's `id` is sent. **Optional** — no match logs a WARNING and upserts without a contact (Forecast is **not** skipped). |
 | `gewijzigd` | — | Delta sync filter field only (not mapped) |
+
+> **Owner is not a Contact.** The responsible person (`ownerId`) is a Salesbuildr *user*, not a Contact — there is no public user endpoint, so it cannot be resolved by e-mail. The `Salesbuildr_Forecasts` GetConnector therefore supplies the SB user id directly in `verantwoordelijkeOwnerID`. (`verantwoordelijke` = AFAS employee code and `verantwoordelijkeMail` are also on the record but are not sent.) The client `contactId`, by contrast, *is* a Contact and is resolved by e-mail via `Get-SalesbuildrContactByEmail`.
 
 ### Fetch closed Opportunities
 

@@ -248,9 +248,14 @@ Authorization: AfasToken {base64_encoded_token}
       "bedrag": 0,
       "bedragVerwacht": 0,
       "verantwoordelijke": "10011",
+      "verantwoordelijkeOwnerID": "sZ404hyXGcN1TyVmbBN5",
       "verantwoordelijkeNaam": "Wim de Heer",
+      "verantwoordelijkeMail": "wim@example.nl",
       "begindatum": "2013-12-19T00:00:00Z",
-      "einddatumVerwacht": null
+      "einddatumVerwacht": null,
+      "contactpersoon": 8324,
+      "contactpersoonNaam": "Roveg Fruit - ICT - Jan Jansen",
+      "contactpersoonMail": "jan.jansen@example.nl"
     }
   ]
 }
@@ -272,9 +277,14 @@ Authorization: AfasToken {base64_encoded_token}
 | `bedrag` | decimal | Actual amount | `Am` |
 | `bedragVerwacht` | decimal | Expected/weighted amount | `AmF` |
 | `verantwoordelijke` | string | Responsible employee code | `EmId` |
+| `verantwoordelijkeOwnerID` | string | Salesbuildr **user id** of the responsible employee (resolved in the GetConnector) | — (→ Salesbuildr `ownerId`) |
 | `verantwoordelijkeNaam` | string | Responsible employee name | — (joined) |
+| `verantwoordelijkeMail` | string | Responsible employee work e-mail | — (informational; not sent to Salesbuildr) |
 | `begindatum` | datetime | Start date | `DaSt` |
 | `einddatumVerwacht` | datetime\|null | Expected close date | `DaEn` |
+| `contactpersoon` | integer | Client contact person number | `CtPe` |
+| `contactpersoonNaam` | string | Client contact person name | — (joined) |
+| `contactpersoonMail` | string | Client contact work e-mail | — (→ Salesbuildr `contactId`, resolved via `/public-api/contact` e-mail lookup) |
 
 ### Filtering
 
