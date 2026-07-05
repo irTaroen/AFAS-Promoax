@@ -19,7 +19,33 @@ AFAS Profit exposes its data through a REST API called the **App Connector**. It
 https://{environment_number}.rest.afas.online/profitrestservices/
 ```
 
-Replace `{environment_number}` with your AFAS environment number (5-digit number provided by AFAS).
+Replace `{environment_number}` with your AFAS environment number (5-digit number provided by AFAS). For Promax this is **53307**.
+
+### Environment types
+
+AFAS provides three environment types. The domain suffix selects which one you hit:
+
+| Type | Base URL | Purpose |
+|---|---|---|
+| **Production** | `https://{id}.rest.afas.online/ProfitRestServices` | Live environment where customers work |
+| **Test** | `https://{id}.resttest.afas.online/ProfitRestServices` | Usually a snapshot copy of production for testing; may also be a demo/template environment |
+| **Accept** | `https://{id}.restaccept.afas.online/ProfitRestServices` | First to receive a new AFAS Profit version — customers test a release here before production is updated |
+
+> There is **no** way to push definition changes from accept/test to production automatically. Connector definitions must be manually [imported/exported](https://help.afas.nl/help/NL/SE/App_Cnnctr_ImpExp.htm).
+
+### Request URL anatomy
+
+`https://12345.rest.afas.online/ProfitRestServices/connectors/Profit_Employees?skip=0&take=1`
+
+| Part | Example | Description |
+|---|---|---|
+| Protocol | `https` | Always HTTPS |
+| Environment id | `12345` | The customer's AFAS domain (5 digits) |
+| API service | `rest` | The REST web service |
+| Environment type | *(empty)* / `test` / `accept` | Empty for production; `test`/`accept` otherwise |
+| Domain | `afas.online` | Hosting domain |
+| Endpoint path | `/connectors/Profit_Employees` | Connector being addressed |
+| Query parameters | `?skip=0&take=1` | Key-value pairs after `?`, joined with `&` |
 
 ---
 
@@ -61,6 +87,8 @@ fetch(url, {
 
 ## GetConnector — Reading Data
 
+A GetConnector is an endpoint an AFAS administrator composes in Profit; it determines which records and fields you can read. Call it with `GET`; to receive new data you issue a new request (polling). A GetConnector may also carry a **built-in** filter or authorization configured in Profit (e.g. "current year only") on top of any per-request filter you send.
+
 ```
 GET /connectors/{connectorName}
 ```
@@ -74,25 +102,100 @@ GET /connectors/{connectorName}
 | `filterfieldids` | Field(s) to filter on | `PrId` |
 | `filtervalues` | Value(s) to filter on | `ACME001` |
 | `operatortypes` | Filter operator (see table below) | `1` |
-| `orderbyfieldids` | Field(s) to sort by | `DaSt` |
+| `filterjson` | URL-encoded JSON filter (alternative to the three params above) | see [JSON filter](#json-filter-filterjson) |
+| `orderbyfieldids` | Field(s) to sort by (prefix `-` for descending) | `DaSt` |
 
-**Operator types** (verified against environment 53307):
+### Filter operators (`operatortypes`)
 
-| Value | Meaning |
-|---|---|
-| `1` | equal (`=`) |
-| `2` | greater than or equal (`>=`) |
-| `3` | less than or equal (`<=`) |
-| `4` | **greater than (`>`)** — use this for delta sync |
-| `5` | less than (`<`) |
-| `6` | contains |
-| `7` | not equal (`!=`) |
+The full set of operators supported by AFAS Profit:
+
+| Value | Meaning | Symbol |
+|---|---|---|
+| `1` | equal | `=` |
+| `2` | greater than or equal | `>=` |
+| `3` | less than or equal | `<=` |
+| `4` | **greater than** — use this for delta sync | `>` |
+| `5` | less than | `<` |
+| `6` | contains | `*` |
+| `7` | not equal | `!=` |
+| `8` | is empty | `[]` |
+| `9` | is not empty | `![]` |
+| `10` | starts with | `@` |
+| `11` | does not contain | `!*` |
+| `12` | does not start with | `!@` |
+| `13` | ends with | `&` |
+| `14` | does not end with | `!&` |
+| `15` | quick filter (snelfilter) | `Sf` |
 
 > ⚠️ **Operator 4, not 5, is "greater than".** Operator `5` is *less than*. An earlier version of the sync used `5` for delta and silently returned 0 rows.
 
 > ⚠️ **Datetime filter format:** use `yyyy-MM-ddTHH:mm:ss` in **local** time — e.g. `2026-06-29T00:00:00`. A trailing `Z` (UTC designator) causes a server error (`Conversion from string "0Z" to type 'Integer' is not valid`), and a bare date with no time component also fails.
 
-**Example:**
+> **Operators 8 / 9 (empty / not empty):** you must still pass a `filtervalues` entry, but it may be empty — e.g. `filterfieldids=PrefixBirthName&operatortypes=8&filtervalues=""`.
+
+### Combining filters — AND / OR
+
+With the `filterfieldids` / `filtervalues` / `operatortypes` triple, the separator between values decides the boolean relationship. All three parameters must list their entries in the same order and count.
+
+**AND** — separate with a comma `,`:
+
+```
+GET /connectors/Profit_Administrations?filterfieldids=fieldA,fieldB&filtervalues=valueA,valueB&operatortypes=1,1
+```
+
+**OR** — separate with a semicolon `;`:
+
+```
+GET /connectors/Profit_Administrations?filterfieldids=fieldA;fieldB&filtervalues=valueA;valueB&operatortypes=1;1
+```
+
+### JSON filter (`filterjson`)
+
+For anything beyond a flat AND/OR list, pass a single URL-encoded JSON object in the `filterjson` query parameter instead of the three separate params. This keeps complex filters readable.
+
+**Semantics:** fields **within one** `Filter` have an **AND** relationship; multiple `Filter` blocks have an **OR** relationship between them.
+
+The example below filters on `(AdminId = 1 AND AdminNm contains 'Internet') OR (AdminId = 3 AND AdminNm = 'Internet')`:
+
+```json
+{
+    "Filters": {
+        "Filter": [{
+                "@FilterId": "Filter 1",
+                "Field": [
+                    { "@FieldId": "AdminId", "@OperatorType": "1", "#text": "1" },
+                    { "@FieldId": "AdminNm", "@OperatorType": "6", "#text": "Internet" }
+                ]
+            }, {
+                "@FilterId": "Filter 2",
+                "Field": [
+                    { "@FieldId": "AdminId", "@OperatorType": "1", "#text": "3" },
+                    { "@FieldId": "AdminNm", "@OperatorType": "1", "#text": "Internet" }
+                ]
+            }
+        ]
+    }
+}
+```
+
+Structure notes:
+- `@FieldId` — the field to filter on; `@OperatorType` — an operator value from the table above; `#text` — the filter value.
+- With a **single** filter and a **single** field, `Filter` and `Field` are plain objects (not arrays):
+
+  ```json
+  { "Filters": { "Filter": { "@FilterId": "Filter 1",
+      "Field": { "@FieldId": "Medewerker", "@OperatorType": "1", "#text": "ALLARDJ" } } } }
+  ```
+
+The JSON must be **URL-encoded** into the request:
+
+```
+GET /connectors/Profit_Administrations?filterjson=%7B%22Filters%22%3A%7B%22Filter%22%3A%5B...%5D%7D%7D&skip=0&take=20&orderbyfieldids=AdminId
+```
+
+> **Downside:** `filterjson` inflates the query string and hits the URL length limit (see below) much sooner.
+
+**Example (simple triple-parameter filter):**
 
 ```http
 GET /connectors/CmForecast?skip=0&take=50&filterfieldids=PrId&filtervalues=ACME001&operatortypes=1
@@ -111,9 +214,60 @@ Authorization: AfasToken {base64_encoded_token}
 }
 ```
 
+> Datetime fields end with a `Z`; AFAS recommends **ignoring** the `Z` — the time is always Amsterdam time, not UTC.
+
+### Skip and take (pagination)
+
+Profit tables can hold far more data than you want in one response. Every GetConnector `GET` applies `skip` and `take`, defaulting to `skip=0`, `take=100`.
+
+- Rule of thumb for a healthy request: `[number of columns] × [number of rows] < 150.000`. A good request completes within ~1000 ms.
+- Fetching too much yields an HTTP `500` with `Out of String space` / `Out of memory`. Implement `skip`/`take` robustly to avoid over-fetching and excessive requests.
+- **Deep paging is slow:** performance degrades as `skip` grows; beyond `skip` ≈ 100.000 it is generally unacceptable. Instead, slice the data by adjusting the *filter* per call (e.g. per article, per employee, per posting date), and still use `skip`/`take` within each slice. Up to **5 concurrent** calls are allowed to shorten wall-clock time.
+- **Get-all** (`skip=-1&take=-1`) fetches everything in one go. AFAS **strongly discourages** this — it can overload the AFAS servers and your own system. Prefer a generous but bounded `take`.
+
+> ⚠️ **`orderbyfieldids` is mandatory when using `skip`/`take`.** Without it the database picks an arbitrary (and possibly varying) order, so rows can be skipped or duplicated across pages.
+
+### OrderBy
+
+`orderbyfieldids` sets the sort order; you may list multiple fields. Prefer **integer** fields — they have the fastest index.
+
+- Ascending: `orderbyfieldids=Account`
+- Descending: prefix with `-` → `orderbyfieldids=-Account`
+- Multiple fields (URL-encode the comma as `%2C`): `orderbyfieldids=Account%2CType`
+
+### URL length limit
+
+The **parameter string** (everything from `?` onward, including `?` and `&`) is limited to **2049 characters**. Exceeding it returns HTTP **`404 Not Found`**. This is the main practical constraint on large `filterjson` filters.
+
+### MetaInfo request
+
+Ask a connector to describe itself — fields, per-field data type, labels, field length, and (for coded fields) the code-table values — by inserting `/metainfo/get/` before the connector name:
+
+```
+GET /metainfo/get/Profit_Accounts
+```
+
+```json
+{
+  "name": "Profit_Accounts",
+  "description": "Grootboekrekeningen (Financieel)",
+  "fields": [
+    { "id": "Account", "fieldId": "U001", "dataType": "string", "label": "Rekeningnummer", "length": 16, "controlType": 5, "decimals": 0, "decimalsFieldId": "" }
+  ]
+}
+```
+
+A `MetaInfo` request with no connector name lists all GetConnectors in the environment (and shows which are blocked).
+
+### Row count
+
+There is no direct count parameter. To get a row count, an AFAS administrator makes a copy of the GetConnector, adds a **verdichting** (grouping/aggregation) on the key, and hides the other fields.
+
 ---
 
 ## UpdateConnector — Writing Data
+
+An external application inserts, updates, or deletes records in the Profit database via an UpdateConnector (which operations are allowed varies per endpoint). Every UpdateConnector has a [`metainfo`](https://docs.afas.help/profit/nl/apidoc) request that lists all available fields, including custom fields (vrije velden).
 
 All write operations use the same endpoint and body structure:
 
@@ -138,6 +292,68 @@ DELETE /connectors/{connectorName}     ← Delete
 ```
 
 For updates and deletes, include only the key fields and the fields you want to change.
+
+> `@`-prefixed properties on `Element` are **key / attribute** values (e.g. `"@UsId": "..."`), distinct from the record data inside `Fields`.
+
+### POST — insert & validation
+
+`POST` creates records. AFAS validates before creating; a failed validation returns HTTP **`500`**. Examples of validations: BSN must pass the 11-check, an address must carry a country code, a financial mutation must balance (debit total = credit total).
+
+A successful UpdateConnector call usually returns **`201`**. The `FieldId` in the response body is the **primary key** of the object the POST acted on:
+
+```json
+{ "results": { "KnSubject": { "SbId": "999999" } } }
+```
+
+### POST on a sub-object
+
+Nested UpdateConnectors let you update the main object while inserting into a sub-object (e.g. add an article line to an existing sales order). Two methods:
+
+**1. `@Action` tag in the body.** Add `@Action` as a property of a `Fields` object. Allowed values: `insert`, `update`, `delete`. The whole body is validated and processed as one transaction — flexible for deeply nested structures (up to ~6 levels; common on `KnEmployee`, `FbDeliveryNote`, `FbSales`, etc.). Example — deactivate one bank account and add another on an employee in a single request:
+
+```json
+{
+  "AfasEmployee": {
+    "Element": {
+      "@EmId": "1234568774",
+      "Fields": { "@Action": "update" },
+      "Objects": [{
+        "AfasBankInfo": {
+          "Element": [
+            { "@AcId": "NL57RABO0312000111", "@NoBk": false,
+              "Fields": { "@Action": "update", "SeNo": 3, "SaAc": false, "Iban": "NL57RABO0312000111" } },
+            { "@AcId": "NL40BOTK0755026802", "@NoBk": false,
+              "Fields": { "@Action": "insert", "SaAc": true, "IbCk": true, "Iban": "NL40BOTK0755026802" } }
+          ]
+        }
+      }]
+    }
+  }
+}
+```
+
+**2. Sub-object in the URL.** POST straight at the sub-object path; updating the main object is then optional. Deeper nested objects in the body are created too.
+
+- Main object: `../ProfitRestServices/connectors/HrMobility`
+- Sub-object: `../ProfitRestServices/connectors/HrMobility/HrEmployeeMobilityRegistration`
+
+### PUT — update
+
+Per endpoint the OpenAPI spec states which actions are allowed. On a `PUT`, only the **key fields** are required (usually the same keys as the `POST` result). A `PUT` updates every field it is given, plus every sub-object whose key is supplied.
+
+**Clearing a field:** send an empty value. E.g. to blank a filled `Ds` field: `"Ds": ""`.
+
+### DELETE
+
+Some endpoints allow `DELETE`. This is a **permanent** delete — the record no longer exists afterwards. Pass the key as **URL parameters**, not a body:
+
+```
+DELETE /connectors/KnAppointment/KnAppointment/ApId/123
+```
+
+This deletes the `KnAppointment` whose `ApId` = `123`. To delete a **nested** row, include the full key path of both the main element and the sub-element in the URL.
+
+> The body-based DELETE examples further down in this guide are the equivalent for connectors that accept a keyed body; the URL-parameter form above is the form AFAS documents for `DELETE`.
 
 ---
 
@@ -1415,5 +1631,9 @@ Created on demand when a quote line references an item code not yet present in A
 
 ## Further Reading
 
+- AFAS API docs — Concepts: `https://docs.afas.help/profit/nl/concepts`
+- AFAS API docs — GetConnector (filtering, skip/take, orderby, metainfo): `https://docs.afas.help/profit/nl/get-connector`
+- AFAS API docs — UpdateConnector (POST/PUT/DELETE, @Action, sub-objects): `https://docs.afas.help/profit/nl/update-connector`
 - AFAS Developer Portal: `https://help.afas.nl/help/NL/SE/App_Cnnctr_Add.htm`
-- App Connector documentation: `https://help.afas.nl/help/NL/SE/App_Cnnctr_Rest_Get.htm`
+- GetConnector functional docs: `https://help.afas.nl/help/NL/SE/App_Cnnctr_Get.htm`
+- UpdateConnector functional docs: `https://help.afas.nl/help/NL/SE/App_Cnr_Rest_Update.htm`
