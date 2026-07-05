@@ -453,29 +453,6 @@ function Get-SalesbuildrContactByEmail {
         Select-Object -First 1
 }
 
-function Get-SalesbuildrAllQuotes {
-    # Haalt ALLE quotes op (gepagineerd) en cachet ze in $Global:SalesbuildrQuotesCache,
-    # zodat één run niet per opportunity opnieuw de volledige lijst ophaalt.
-    # Reden voor de bulk-fetch: de server-side 'opportunityId'-filter op
-    # /public-api/quote werkt niet (geeft altijd total=0), dus koppelen we
-    # client-side op quote.opportunity.id — zie Get-SalesbuildrPrimaryQuote.
-    if ($null -ne $Global:SalesbuildrQuotesCache) { return $Global:SalesbuildrQuotesCache }
-
-    $all  = @()
-    $size = 100
-    $from = 0
-    do {
-        $response = Invoke-SalesbuildrRequest `
-            -Uri "$($Global:SalesbuildrUri)/public-api/quote?size=$size&from=$from"
-        $all  += $response.results
-        $from += $size
-    } while ($all.Count -lt $response.total)
-
-    Write-Log INFO "$($all.Count) quotes opgehaald en gecachet voor koppeling aan opportunities"
-    $Global:SalesbuildrQuotesCache = $all
-    return $all
-}
-
 function Get-SalesbuildrAllCategories {
     # Haalt alle product-categorieën op en cachet ze in $Global:SalesbuildrCategoriesCache.
     # Nodig omdat de cost center (costCenterId) NIET op de quote-regel of het inline
@@ -494,9 +471,10 @@ function Get-SalesbuildrAllCategories {
 
 function Get-SalesbuildrPrimaryQuote {
     # Haalt de primaire Quote op voor een Opportunity.
-    # OpportunityResponseDto bevat GEEN quoteId, én de server-side opportunityId-filter
-    # op /public-api/quote werkt niet — daarom halen we alle quotes op (gecachet) en
-    # matchen client-side op quote.opportunity.id (bevestigd veldpad: $q.opportunity.id).
+    # OpportunityResponseDto bevat GEEN quoteId, dus filteren we de quote-endpoint
+    # server-side op de opportunity. LET OP: de filter-sleutel is 'opportunity.id'
+    # (niet 'opportunityId' — die geeft altijd total=0). Formaat van de filters-param:
+    #   filters=opportunity.id:{id}   (dubbele punt URL-encoded als %3A)
     # Bevestigde veldnamen (QuoteResponseDto):
     #   - opportunity : { id, name, ... } — koppeling naar de Opportunity
     #   - items       : array van QuoteItemResponseDto (NIET 'lines')
@@ -511,7 +489,9 @@ function Get-SalesbuildrPrimaryQuote {
     #   - mpn       : fabrikantcode
     param([string]$OpportunityId)
 
-    $quotes = Get-SalesbuildrAllQuotes | Where-Object { $_.opportunity.id -eq $OpportunityId }
+    $response = Invoke-SalesbuildrRequest `
+        -Uri "$($Global:SalesbuildrUri)/public-api/quote?filters=opportunity.id%3A$OpportunityId&size=100"
+    $quotes = $response.results
 
     $primary = $quotes | Where-Object { $_.primary -eq $true } | Select-Object -First 1
 

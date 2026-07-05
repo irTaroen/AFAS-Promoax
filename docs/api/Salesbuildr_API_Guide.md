@@ -766,12 +766,12 @@ Paginated via `size`/`from`. The `filters` parameter is **equality-only** (`fiel
 ### Fetch the primary quote for a closed Opportunity
 
 ```
-GET /public-api/quote?size=100&from={offset}
+GET /public-api/quote?filters=opportunity.id:{id}&size=100
 ```
 
-> ⚠️ **The `opportunityId` filter does not work.** Despite being the documented example (`filters=statusId:approved,opportunityId:opp123`), `GET /public-api/quote?filters=opportunityId:{id}` returns `total: 0` on the Promax tenant even when a matching quote exists. So the sync **fetches all quotes once** (paginated, cached in `$Global:SalesbuildrQuotesCache` for the run) and matches **client-side on `quote.opportunity.id`**. The quote→opportunity link lives in `QuoteResponseDto.opportunity` (`{ id, name, ... }`).
+> ⚠️ **Filter key is `opportunity.id`, not `opportunityId`.** The documented example (`filters=statusId:approved,opportunityId:opp123`) is wrong for this field — `filters=opportunityId:{id}` returns `total: 0` on the Promax tenant even when a matching quote exists, and a bare `?opportunityId={id}` query param throws a 400 validation error. The correct filter key is the nested field name `opportunity.id` (colon URL-encoded as `%3A`, same as `statusId%3Aclosed` above), which fetches server-side per-opportunity — no bulk fetch or client-side cache needed. The quote→opportunity link lives in `QuoteResponseDto.opportunity` (`{ id, name, ... }`).
 
-Among the matched quotes, the one with `primary: true` is used (fallback: most recent `status: "approved"` by `approvedAt`). Note: `primary` is **per-opportunity** — every quote reports `primary: true` for its own opportunity — so it only disambiguates once the set is already narrowed to a single opportunity.
+Among the returned quotes, the one with `primary: true` is used (fallback: most recent `status: "approved"` by `approvedAt`). Note: `primary` is **per-opportunity** — every quote reports `primary: true` for its own opportunity — so it only disambiguates once the set is already narrowed to a single opportunity.
 
 ### Quote line → AFAS `KnQuotationLine`
 
