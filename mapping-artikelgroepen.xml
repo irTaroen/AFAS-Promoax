@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Mapping SalesBuildr categorie -> AFAS artikelgroep.
+     SB-id / SB-naam zijn ingevuld (bron: GET /public-api/category).
+     Vul AFAS-id (artikelgroep/Grp) en AFAS-naam (omschrijving) zelf in. -->
+<mapping-artikelgroepen>
+  <categorie SB-id="ltNz5UoHxIEqvHfael6J" SB-naam="Access Points" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="BUm5ppV1xwgA6zo4A2Kv" SB-naam="Accessories" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="FjnpToQ8dIEee0XE0KJV" SB-naam="Apple Laptops" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="emfAxfriy9iKjq2JPJUP" SB-naam="Apple zakelijke tablets" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="J6eDQPYoSDpOxos6AZjg" SB-naam="Audio" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="a0XWJxnY7RkxS6MixhIE" SB-naam="AV &amp; Collaboration" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="4CsKgX8NjMhy7lXHlYAt" SB-naam="Beheer" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="w4R3aIgQSCtI9jNUVD91" SB-naam="Cloud" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="j1CyTFHmTWxftQOY1FEj" SB-naam="Desktops &amp; laptops" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="UyOpp42UPGy3LKgSOQGX" SB-naam="Diensten" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="KFvIQ7pcwNtBbGHzyB1O" SB-naam="Displays" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="I6ZgopkKMyyFHpdtRDmu" SB-naam="Displays" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="MF2ajuq40pomh3kqDVdv" SB-naam="Docking stations" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="mj4Q2vY91nVGCseEaDPF" SB-naam="eXcite Basis" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="02ChVt1Yeb9ZfOzWfeOc" SB-naam="eXcite Modules" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="HFTBcdHht2Ujlb5n09dW" SB-naam="Firewalls" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="keeKr8SXe8zKyWOB55ep" SB-naam="Garanties" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="3MKnx0ZeuYAObkxQBnD5" SB-naam="Hardware" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="LhYGyOjQN5B5RcfhMD8f" SB-naam="HP Desktops" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="2qe4eUV8nmHDkd4MUPOy" SB-naam="HP Laptops" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="Bm2VKnsuLKnh6QmPVE8V" SB-naam="HP Workstation" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="FBLNVjPaa9Pi3mcYXMwW" SB-naam="Kabels" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="aYCOdDodaDjDNXTIv3Zr" SB-naam="Kabels &amp; materiaal" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="Kbc3MAuqjWy01DrPipCo" SB-naam="Keyboards &amp; Mouse" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="c0Q4t8KowpQ8Llg7rpac" SB-naam="Klant x" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="Lh2g1fiJmU8YwFOci8v9" SB-naam="Laptopbags" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="rIst32by6dWMsuC2nNtd" SB-naam="Laptops" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="XiiO0CHBrUA5r2sUwFXy" SB-naam="Lenovo Desktops" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="xaXioJ7YIGKKktSBK7qG" SB-naam="Lenovo Laptops" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="zyLi4xFxKY5vCGKFE8da" SB-naam="Lenovo Workstation" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="SHiGlzWTpfcCHxfdLoYG" SB-naam="Licenties" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="839YhdFgbWuHcUL26g2P" SB-naam="Licenties" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="feYzt8mZXWfbdmhAr2sI" SB-naam="Managed Services" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="tzk5pKxoWciZ6HUFUZzv" SB-naam="Meeting Room Solutions" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="v21Oo6ruaYDnb7yODarC" SB-naam="Microsoft Laptops" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="7FzTrjJqaFC0R4YBwZhW" SB-naam="Microsoft zakelijke tablets" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="LNsxu30OHVVuW2RFtf9Z" SB-naam="Modern Workplace" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="IS6mWleIMjMT06yYzuML" SB-naam="Monitoring" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="Tjto4kH3YV3xvMWcV0xX" SB-naam="Narrowcasting" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="p1Dlo9uBjv4BeSMldM2P" SB-naam="Netwerkbeheer" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="G3tbhCdGKoLSQjKx6AAI" SB-naam="Networking" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="OdvUM0nVWSL7BJi0A0IU" SB-naam="Nog te categoriseren" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="aB5Kl615cts1zfmgyX0u" SB-naam="NUC" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="edDCJ9V3q1oL6h6AijgX" SB-naam="Printers &amp; Scanners" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="dJEjhkqQHKGcjVrJyltx" SB-naam="RAM werkgeheugen" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="pfD6ZbIIhKqw0c3nykeO" SB-naam="Routers" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="ttVTfe3eptQXk3FoeFAm" SB-naam="Samsung zakelijke tablets" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="0QFcMAZpJZBQnNjLUclK" SB-naam="Security" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="nvG0ywJowdMHYqSepL6w" SB-naam="Security Services" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="Bh6hWTSphTQ6Wn68tn0H" SB-naam="Server- &amp; patchkasten" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="ZTYeDAFVZn7ypwSxqQAr" SB-naam="Servers" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="tsVMxJLTeRhmfH015IwL" SB-naam="Servers &amp; Storage" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="Td1igI5XsIbBP5zvfR01" SB-naam="Software" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="CfuteTLzwh4vOjslTwKk" SB-naam="Storage" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="DWhLrWmBSOYfNJViX2xX" SB-naam="Support" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="LChbIwmlIIQDrKd4bHA9" SB-naam="Switches" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="5NMTutWJ5QJN9PmwMjXM" SB-naam="Systeembeheer" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="oA8QjpshCi3GvtBp3jYW" SB-naam="Tablet accessoires" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="lsin2Ib4IdGDV9pQ1nsK" SB-naam="Telefonie" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="d2KExxLAefdxX3Jhi5Wa" SB-naam="UPS" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="B0ywJ0KHMDyX99QsRbXy" SB-naam="VoIP Toestellen" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="b1baTFCef3BQThHAEVi3" SB-naam="Werkplek toebehoren" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="4NNcszLfegESkH3reJVH" SB-naam="Werksoorten beheer" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="2yWZ5XKbsDSweSdgqx7f" SB-naam="Werksoorten projecten" AFAS-id="" AFAS-naam=""/>
+  <categorie SB-id="FXPoLJoZYPi278HHQMRJ" SB-naam="Zakelijke Tablets &amp; Accessoires" AFAS-id="" AFAS-naam=""/>
+</mapping-artikelgroepen>

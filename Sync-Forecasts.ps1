@@ -938,28 +938,28 @@ try {
     #     }
     # }
 
-    # # ── Stap 2c: Lost-Opportunities — alleen de AFAS Forecast op N sluiten ──
-    # #
-    # # Geen artikels/voorcalc: een Lost-forecast wordt enkel afgesloten. De
-    # # CmForecast-sleutel (verkooprelatie/PrId + volgnummer/SqNo) parsen we uit de
-    # # externalIdentifier (zelfde formaat als de Won-tak) — geen re-fetch nodig.
-    # foreach ($Opportunity in $LostOpportunities) {
-    #     $OpportunityId = $Opportunity.id
-    #     if ($Opportunity.externalIdentifier -notmatch '^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$') {
-    #         Write-Log ERROR "[$OpportunityId] Onverwacht externalIdentifier-formaat '$($Opportunity.externalIdentifier)' — kan PrId/SqNo niet parsen, overgeslagen"
-    #         $Flow2Complete = $false
-    #         continue
-    #     }
-    #     $SqNo = [int]$Matches.sqno   # CmForecast @SqNo (volgnummer)
-    #     $DbId = $Matches.pr          # CmForecast @PrId (verkooprelatie)
+    # ── Stap 2c: Lost-Opportunities — alleen de AFAS Forecast op N sluiten ──
+    #
+    # Geen artikels/voorcalc: een Lost-forecast wordt enkel afgesloten. De
+    # CmForecast-sleutel (verkooprelatie/PrId + volgnummer/SqNo) parsen we uit de
+    # externalIdentifier (zelfde formaat als de Won-tak) — geen re-fetch nodig.
+    foreach ($Opportunity in $LostOpportunities) {
+        $OpportunityId = $Opportunity.id
+        if ($Opportunity.externalIdentifier -notmatch '^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$') {
+            Write-Log ERROR "[$OpportunityId] Onverwacht externalIdentifier-formaat '$($Opportunity.externalIdentifier)' — kan PrId/SqNo niet parsen, overgeslagen"
+            $Flow2Complete = $false
+            continue
+        }
+        $SqNo = [int]$Matches.sqno   # CmForecast @SqNo (volgnummer)
+        $DbId = $Matches.pr          # CmForecast @PrId (verkooprelatie)
 
-    #     try {
-    #         Close-AfasForecast -Connector $ConnForecastUpdate -PrId $DbId -SqNo $SqNo -ViOp "N"
-    #     } catch {
-    #         Write-Log ERROR "[$OpportunityId] Fout bij sluiten Forecast [SqNo $SqNo] als Lost (N) in AFAS: $_"
-    #         $Flow2Complete = $false
-    #     }
-    # }
+        try {
+            Close-AfasForecast -Connector $ConnForecastUpdate -PrId $DbId -SqNo $SqNo -ViOp "N"
+        } catch {
+            Write-Log ERROR "[$OpportunityId] Fout bij sluiten Forecast [SqNo $SqNo] als Lost (N) in AFAS: $_"
+            $Flow2Complete = $false
+        }
+    }
 
 
     ####################################################################
