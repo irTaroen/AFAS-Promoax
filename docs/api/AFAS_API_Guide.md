@@ -1344,38 +1344,56 @@ filterfieldids=gewijzigd&filtervalues=2026-01-01T00:00:00&operatortypes=4
 Voorcalculatie idempotency check filters on `offerte` (equals, operator 1):
 
 ```
-filterfieldids=offerte&filtervalues=SB-13&operatortypes=1
+filterfieldids=offerte&filtervalues=11310&operatortypes=1
 ```
 
-### Close a Forecast as won (`CmForecast`, `PUT`)
+`11310` is the AFAS `forecast` id (see externalIdentifier format below) — **not** `SB-{SqNo}` as in an earlier version.
 
-Triggered when a Salesbuildr Opportunity is closed-won; sets `ViOp` (verkoopkans-opvolging) to `"G"` (gewonnen).
+### Opportunity `externalIdentifier` format
+
+Flow 1 sets the Salesbuildr Opportunity's `externalIdentifier` to `afas-Forecast-{forecast}-{volgnummer}-{verkooprelatie}` (e.g. `afas-Forecast-11310-42-10654`), encoding three distinct `Salesbuildr_Forecasts` fields so Flow 2 can parse the CmForecast key directly with **no re-fetch** of the Forecast:
+
+| Field | Example | Role |
+|---|---|---|
+| `forecast` | `11310` | Globally-unique AFAS forecast id — used as the `KnQuotation.QuId` (voorcalculatie idempotency key). **Not** the CmForecast key. |
+| `volgnummer` | `42` | CmForecast `SqNo` (composite key part) |
+| `verkooprelatie` | `"10654"` | CmForecast `PrId` (composite key part; AFAS debtor code); also used as `KnQuotation.DbId` |
+
+Flow 2 parses all three back out via regex `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$`.
+
+### Close a Forecast as won or lost (`CmForecast`, `PUT`)
+
+Triggered when a closed Salesbuildr Opportunity is categorized Won or Lost (strictly by its **primary quote** — see [Salesbuildr_API_Guide.md](Salesbuildr_API_Guide.md#promax-implementation-notes-sync-afas2salesbuildr-forecastsps1)). The composite primary key `PrId` (verkooprelatie) + `SqNo` (volgnummer) is passed as `@`-prefixed **Element-level** attributes, not inside `Fields`:
 
 ```json
-{ "CmForecast": { "Element": { "Fields": {
-    "PrId": "<verkooprelatie>",
-    "SqNo": <integer>,
-    "ViOp": "G",
-    "DaSc": "yyyy-MM-dd"
-}}}}
+{ "CmForecast": { "Element": {
+    "@PrId": "10654",
+    "@SqNo": 42,
+    "Fields": { "ViOp": "G", "ViRe": "00", "DaSc": "2026-07-05", "OrAF": 6284.21 }
+}}}
 ```
 
-`PrId` + `SqNo` form the composite key. `SqNo` is parsed by stripping the `afas-Forecast-` prefix off the Opportunity's `externalIdentifier`. `PrId` is the AFAS `verkooprelatie` — this is **not** on the Opportunity (its `companyExtId` holds the organisatienummer), so Flow 2 re-fetches the Forecast from AFAS by `SqNo` (`GET Salesbuildr_Forecasts?filterfieldids=forecast&filtervalues={SqNo}&operatortypes=1`) and reads `verkooprelatie` from it. The same value is used as `DbId` on the `KnQuotation` below.
+Won (`ViOp: "G"`) example above; Lost is identical except `"ViOp": "N"` and **no** `OrAF` field at all.
+
+- `@PrId` / `@SqNo` are parsed straight from the Opportunity's `externalIdentifier` (see format above) — Flow 2 no longer re-fetches the Forecast from AFAS.
+- `ViRe` is always `"00"`.
+- `DaSc` is currently the current date (placeholder — revisit later for a real close date).
+- `OrAF` (total quote amount) is included **only** for Won; it's computed client-side from the primary quote's items since `QuoteResponseDto` has no ready-made total: `Σ (price × quantity × (1 - discount))` (`discount` is a decimal fraction; near-zero values like `-1e-6` are rounding noise; `setupPrice` and quote-level discount are ignored).
 
 ### Create a Quotation with lines (`KnQuotation`, `POST`)
 
 ```json
 { "KnQuotation": { "Element": {
-    "Fields": { "QuId": "SB-13", "DbId": "<verkooprelatie>",
-                "QuDa": "...", "Ds": "...", "CuId": "EUR", "FcNo": 13 },
+    "Fields": { "QuId": "11310", "DbId": "<verkooprelatie>",
+                "QuDa": "...", "Ds": "...", "CuId": "EUR", "FcNo": 42 },
     "Objects": { "KnQuotationLine": { "Element": [
         { "Fields": { "ItCd": "...", "Qu": 1, "UP": 100.00 } }
     ]}}
 }}}
 ```
 
-- `QuId` = `"SB-{SqNo}"` — predictable, fits the 21-char limit, and doubles as the idempotency key (checked via the `Salesbuildr_Voorcalculatie` GetConnector, see filter above).
-- `FcNo` links the quotation back to the originating Forecast.
+- `QuId` = the AFAS `forecast` id (e.g. `"11310"`) — no prefix for now (may be added later); doubles as the idempotency key (checked via the `Salesbuildr_Voorcalculatie` GetConnector, see filter above). Only created for Won opportunities.
+- `FcNo` = `volgnummer`/`SqNo`, links the quotation back to the originating Forecast.
 - Line field `UP` is unit price — **not** `unitPrice`.
 
 ### Create a minimal Article (`FbItemArticle`, `POST`)

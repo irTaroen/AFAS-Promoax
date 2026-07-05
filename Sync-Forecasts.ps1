@@ -150,7 +150,7 @@ function Get-AfasRecordByExternalId {
     # Geeft het eerste gevonden record terug, of $null als het niet bestaat.
     param(
         [string]$Connector,
-        [string]$ExternalId    # QuId-formaat, bijv. "SB-13"
+        [string]$ExternalId    # QuId = AFAS forecast-id, bijv. "11310"
     )
 
     $url      = "$($Global:AfasRestUrl)/connectors/$($Connector)" +
@@ -250,39 +250,55 @@ function Get-AfasArtikelgroep {
 }
 
 function Close-AfasForecast {
-    # Sluit een Forecast als Gewonnen (ViOp=G) via PUT op CmForecast.
-    # Primaire sleutel is samengesteld: PrId (verkooprelatie) + SqNo (volgnummer).
+    # Sluit een Forecast via PUT op CmForecast, met de verkoopstatus (ViOp):
+    #   G = Gewonnen (Won)  — opportunity closed én primaire quote 'approved'
+    #   N = Verloren (Lost) — opportunity closed maar geen/niet-goedgekeurde quote
+    #
+    # De samengestelde primaire sleutel PrId (verkooprelatie) + SqNo (volgnummer)
+    # identificeert het bestaande record en gaat daarom als @-attributen op het
+    # Element-niveau staan (@PrId/@SqNo), NIET in Fields.
+    #
+    # Vaste velden:
+    #   ViRe = "00" (altijd), DaSc = sluitdatum (voorlopig huidige datum).
+    #   OrAF = totale offertebedrag — ALLEEN bij Won (G); bij Lost (N) weggelaten.
     param(
         [string]$Connector,
-        [string]$PrId,    # verkooprelatie / debtor code (CmForecast.PrId)
-        [int]$SqNo        # volgnummer / sequence number (CmForecast.SqNo)
+        [string]$PrId,                        # verkooprelatie / debtor code (CmForecast.@PrId)
+        [int]$SqNo,                           # volgnummer / sequence number (CmForecast.@SqNo)
+        [ValidateSet("G","N")][string]$ViOp,  # verkoopstatus: G = Gewonnen, N = Verloren
+        [decimal]$OrAF = 0                     # totale offertebedrag (alleen relevant bij G)
     )
+
+    $fields = @{
+        ViOp = $ViOp
+        ViRe = "00"
+        DaSc = (Get-Date -Format "yyyy-MM-dd")
+    }
+    if ($ViOp -eq "G") { $fields.OrAF = $OrAF }
 
     $body = @{
         CmForecast = @{
             Element = @{
-                Fields = @{
-                    PrId = $PrId
-                    SqNo = $SqNo
-                    ViOp = "G"
-                    DaSc = (Get-Date -Format "yyyy-MM-dd")
-                }
+                "@PrId" = $PrId
+                "@SqNo" = $SqNo
+                Fields  = $fields
             }
         }
     }
 
-    Write-Log INFO "Forecast sluiten in AFAS: $PrId / SqNo $SqNo"
+    Write-Log INFO "Forecast sluiten in AFAS: $PrId / SqNo $SqNo (ViOp=$ViOp$(if ($ViOp -eq 'G') { ", OrAF=$OrAF" }))"
     Invoke-AfasUpdateConnector -Connector $Connector -Body $body -Method 'Put'
 }
 
 function New-AfasVoorcalculatie {
     # Maakt een KnQuotation (voorcalculatie) aan in AFAS, inclusief regels.
-    # QuId = predictable ID voor idempotentie, bijv. "SB-13" (max 21 chars).
-    # FcNo koppelt de quotatie terug aan de originating Forecast (CmForecast.SqNo).
+    # QuId = het unieke AFAS forecast-id (bijv. "11310"), tevens idempotentiesleutel
+    #        (offerte in Salesbuildr_Voorcalculatie); prefix evt. later (max 21 chars).
+    # FcNo koppelt de quotatie terug aan de originating Forecast (CmForecast.SqNo = volgnummer).
     # KnQuotationLine velden: ItCd (itemcode), Qu (aantal), UP (eenheidsprijs).
     param(
         [string]$Connector,
-        [string]$QuId,        # offerte-nummer, bijv. "SB-13"
+        [string]$QuId,        # offerte-nummer = AFAS forecast-id, bijv. "11310"
         [string]$DbId,        # verkooprelatie / debtor code (= AFAS PrId)
         [string]$Omschrijving,
         [int]$FcNo,           # forecast volgnummer (CmForecast.SqNo)
@@ -470,7 +486,8 @@ function Get-SalesbuildrAllCategories {
 }
 
 function Get-SalesbuildrPrimaryQuote {
-    # Haalt de primaire Quote op voor een Opportunity.
+    # Haalt de PRIMAIRE Quote (primary:true) op voor een Opportunity, of $null.
+    # De aanroeper bepaalt Won/Lost op basis van $quote.status -eq 'approved'.
     # OpportunityResponseDto bevat GEEN quoteId, dus filteren we de quote-endpoint
     # server-side op de opportunity. LET OP: de filter-sleutel is 'opportunity.id'
     # (niet 'opportunityId' — die geeft altijd total=0). Formaat van de filters-param:
@@ -493,15 +510,33 @@ function Get-SalesbuildrPrimaryQuote {
         -Uri "$($Global:SalesbuildrUri)/public-api/quote?filters=opportunity.id%3A$OpportunityId&size=100"
     $quotes = $response.results
 
-    $primary = $quotes | Where-Object { $_.primary -eq $true } | Select-Object -First 1
+    # GEEN fallback naar een willekeurige goedgekeurde quote: de Won/Lost-bepaling
+    # hangt strikt af van de status van de PRIMAIRE quote (primary:true). Een
+    # goedgekeurde niet-primaire quote zou een Lost-opportunity ten onrechte als
+    # Won classificeren, dus we geven uitsluitend de primary:true quote terug (of $null).
+    return $quotes | Where-Object { $_.primary -eq $true } | Select-Object -First 1
+}
 
-    if ($null -eq $primary) {
-        # Fallback: geen primaire quote, gebruik de meest recente goedgekeurde
-        $primary = $quotes | Where-Object { $_.status -eq 'approved' } |
-            Sort-Object -Property approvedAt -Descending | Select-Object -First 1
+function Get-SalesbuildrQuoteTotal {
+    # Berekent het totale offertebedrag (CmForecast.OrAF): som over de regels van
+    # price * quantity * (1 - discount). De QuoteResponseDto heeft GEEN kant-en-klaar
+    # totaalveld, daarom sommeren we zelf. Bevestigde velden per QuoteItemResponseDto:
+    #   price    = bruto eenheidsprijs (vóór regelkorting)
+    #   quantity = aantal
+    #   discount = regelkorting als DECIMALE FRACTIE (0.12 = 12%, 0.5 = 50%);
+    #              waarden rond 0 (bijv. -1e-6) zijn afrondingsruis en tellen als geen korting.
+    # LET OP: negeert setup-kosten (setupPrice) en een eventuele quote-brede korting
+    # (quote.discount is in de praktijk altijd leeg); alleen regelkortingen tellen mee.
+    param([array]$Items)
+
+    $total = [decimal]0
+    foreach ($item in $Items) {
+        $price    = if ($null -ne $item.price)    { [decimal]$item.price }    else { [decimal]0 }
+        $quantity = if ($null -ne $item.quantity) { [decimal]$item.quantity } else { [decimal]0 }
+        $discount = if ($null -ne $item.discount) { [decimal]$item.discount } else { [decimal]0 }
+        $total   += $price * $quantity * (1 - $discount)
     }
-
-    return $primary
+    return $total
 }
 
 function Invoke-SalesbuildrUpsertOpportunity {
@@ -605,11 +640,16 @@ try {
     #     $Forecast | Format-List | Out-String | Write-Host
 
     #     # Bevestigde veldnamen (Salesbuildr_Forecasts GetConnector):
-    #     # 'forecast'       = integer SqNo (primary key), 'forecastOmschrijving' = naam
+    #     # 'forecast'       = uniek AFAS forecast-id -> gebruikt als QuId (voorcalc-offertenr)
+    #     # 'volgnummer'     = CmForecast SqNo (@SqNo)  ← de updatesleutel
+    #     # 'verkooprelatie' = AFAS debiteurcode (= PrId/@PrId in CmForecast) — NIET voor companyExtId
     #     # 'organisatie'    = AFAS Organisatienummer -> koppeling naar SB Company
-    #     # 'verkooprelatie' = AFAS debiteurcode (= PrId in CmForecast) — NIET voor companyExtId
-    #     $ForecastSqNo = $Forecast.forecast
-    #     $ExternalId   = "afas-Forecast-$ForecastSqNo"
+    #     # 'forecastOmschrijving' = naam
+    #     #
+    #     # De externalIdentifier codeert alles wat Flow 2 nodig heeft om ZONDER re-fetch
+    #     # verder te kunnen: forecast-id (QuId) + volgnummer (@SqNo) + verkooprelatie (@PrId).
+    #     # Formaat: afas-Forecast-{forecast}-{volgnummer}-{verkooprelatie}.
+    #     $ExternalId = "afas-Forecast-$($Forecast.forecast)-$($Forecast.volgnummer)-$($Forecast.verkooprelatie)"
 
     #     # Company-koppeling: de org-sync schrijft companies weg als
     #     # "afas-Organisatie-{organisatienummer}". Dit is dezelfde sleutel.
@@ -707,39 +747,60 @@ try {
     # Batch-watermark voor Flow 2 (zie toelichting bij Flow 1).
     $Flow2Complete = $true
 
-    # ── Stap 2a: Verzamel alle quotation-items en maak ontbrekende Artikels aan ──
+    # ── Stap 2a: Categoriseer elke gesloten Opportunity als Won of Lost ──
+    #
+    # De verkoopstatus van de originating AFAS Forecast (CmForecast.ViOp) én de vraag
+    # of we artikels + voorcalculatie moeten aanmaken, hangen volledig af van deze
+    # tweedeling. Bepalend is UITSLUITEND de PRIMAIRE quote (primary:true):
+    #
+    #   Won  (ViOp=G): opportunity closed  +  primaire quote status == 'approved'
+    #                  → artikels aanmaken, voorcalculatie aanmaken, Forecast sluiten (G)
+    #   Lost (ViOp=N): opportunity closed  +  geen primaire quote, of status != 'approved'
+    #                  → GEEN artikels/voorcalc; alleen de Forecast sluiten (N)
+    #
+    # Een ontbrekende quote is dus GEEN fout meer (was voorheen een skip die het
+    # watermerk vasthield): het is een geldige Lost-uitkomst die het watermerk laat
+    # opschuiven zodra de Forecast succesvol op N is gezet.
 
-    $AllQuotationLines = @{}   # OpportunityId → array van quote-regels
+    $WonOpportunities  = @()   # opps met een goedgekeurde primaire quote (ViOp=G)
+    $LostOpportunities = @()   # opps zonder goedgekeurde primaire quote (ViOp=N)
+    $AllQuotationLines = @{}   # OpportunityId → array van quote-regels (alleen Won)
 
     foreach ($Opportunity in $ClosedOpportunities) {
         # Bevestigd veldnaam: id (OpportunityResponseDto)
         $OpportunityId = $Opportunity.id
 
-        # Haal de primaire quote op via de quote-endpoint gefilterd op opportunityId.
+        # Haal de primaire quote op via de quote-endpoint gefilterd op opportunity.id.
         # OpportunityResponseDto heeft geen quoteId-veld — dit is de enige manier.
         try {
             $Quote = Get-SalesbuildrPrimaryQuote -OpportunityId $OpportunityId
         } catch {
+            # Netwerk-/API-fout: échte fout, houd het watermerk vast en probeer opnieuw.
             Write-Log ERROR "[$OpportunityId] Fout bij ophalen primaire quote: $_"
             $Flow2Complete = $false
             continue
         }
 
-        if ($null -eq $Quote) {
-            Write-Log WARNING "[$OpportunityId] Geen primaire of goedgekeurde quote gevonden — opportunity overgeslagen"
-            $Flow2Complete = $false
-            continue
+        if ($null -ne $Quote -and $Quote.status -eq 'approved') {
+            # ── Won ──
+            # Bevestigd veldnaam: items (QuoteResponseDto) — NIET 'lines'
+            $Lines = $Quote.items
+            $AllQuotationLines[$OpportunityId] = $Lines
+            $WonOpportunities += $Opportunity
+
+            Write-Log INFO "[$OpportunityId] WON — primaire quote 'approved' ($($Lines.Count) regel(s)); artikels + voorcalc + Forecast sluiten (G)"
+            $Quote | Format-List | Out-String | Write-Host
+            $Lines | Format-List | Out-String | Write-Host
+        } else {
+            # ── Lost ──
+            $Reden = if ($null -eq $Quote) { "geen primaire quote" } else { "primaire quote status = '$($Quote.status)'" }
+            $LostOpportunities += $Opportunity
+
+            Write-Log INFO "[$OpportunityId] LOST — $Reden; alleen Forecast sluiten (N)"
         }
-
-        # Bevestigd veldnaam: items (QuoteResponseDto) — NIET 'lines'
-        $Lines = $Quote.items
-        $AllQuotationLines[$OpportunityId] = $Lines
-
-        # Print de opgehaalde quote + regels ter inspectie (debug / dry-run)
-        Write-Log INFO "[$OpportunityId] Primaire quote gevonden: $($Lines.Count) regel(s)"
-        $Quote | Format-List | Out-String | Write-Host
-        $Lines | Format-List | Out-String | Write-Host
     }
+
+    Write-Log INFO "Categorisatie: $($WonOpportunities.Count) Won (G), $($LostOpportunities.Count) Lost (N)"
 
     # # Unieke artikelcodes over alle opportunities heen. De AFAS itemcode (ItCd) is
     # # ALTIJD de 'mpn' van de quote-regel — het 'product'-veld kan leeg zijn (vrije
@@ -795,29 +856,27 @@ try {
     #     }
     # }
 
-    # # ── Stap 2b: Voorcalculatieregels aanmaken per Opportunity ──
+    # # ── Stap 2b: Voorcalculatieregels aanmaken per Won-Opportunity (alleen Won) ──
 
-    # foreach ($Opportunity in $ClosedOpportunities) {
+    # foreach ($Opportunity in $WonOpportunities) {
     #     $OpportunityId = $Opportunity.id
-    #     # externalIdentifier = "afas-Forecast-{SqNo}" — ingesteld bij upsert in Flow 1
-    #     $ForecastSqNo  = [int]($Opportunity.externalIdentifier -replace "^afas-Forecast-", "")
-    #     $QuId          = "SB-$ForecastSqNo"   # predictable QuId, past in 21-char limiet
-
-    #     # PrId/DbId = AFAS verkooprelatie. Dit veld zit NIET op de Opportunity
-    #     # (companyExtId = organisatienummer), dus we halen de Forecast op uit AFAS.
-    #     $AfasForecast = Get-AfasForecastBySqNo -Connector $ConnForecastGet -SqNo $ForecastSqNo
-    #     If ($null -eq $AfasForecast) {
-    #         Write-Log ERROR "[$OpportunityId] Forecast SqNo $ForecastSqNo niet gevonden in AFAS — verkooprelatie onbekend, overgeslagen"
+    #     # De externalIdentifier codeert alles wat we nodig hebben (Flow 1):
+    #     #   afas-Forecast-{forecast}-{volgnummer}-{verkooprelatie}
+    #     # We parsen die rechtstreeks; een re-fetch van de Forecast is niet meer nodig.
+    #     if ($Opportunity.externalIdentifier -notmatch '^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$') {
+    #         Write-Log ERROR "[$OpportunityId] Onverwacht externalIdentifier-formaat '$($Opportunity.externalIdentifier)' — kan forecast-id/PrId/SqNo niet parsen, overgeslagen"
     #         $Flow2Complete = $false
     #         continue
     #     }
-    #     $DbId = $AfasForecast.verkooprelatie
+    #     $QuId = $Matches.fc          # QuId = uniek AFAS forecast-id (bijv. 11310); prefix evt. later
+    #     $SqNo = [int]$Matches.sqno   # CmForecast @SqNo (volgnummer)
+    #     $DbId = $Matches.pr          # CmForecast @PrId (verkooprelatie)
 
     #     # Idempotentie: controleer of Voorcalculatie al bestaat in AFAS (filter op offerte = QuId)
     #     $BestaandeVoorcalc = Get-AfasRecordByExternalId -Connector $ConnVoorcalcGet -ExternalId $QuId
     #     If ($null -ne $BestaandeVoorcalc) {
     #         Write-Log INFO "[$OpportunityId] Voorcalculatie al aanwezig in AFAS ($QuId) — alleen Forecast sluiten"
-    #         try { Close-AfasForecast -Connector $ConnForecastUpdate -PrId $DbId -SqNo $ForecastSqNo } catch { Write-Log ERROR "Fout bij sluiten Forecast: $_"; $Flow2Complete = $false }
+    #         try { Close-AfasForecast -Connector $ConnForecastUpdate -PrId $DbId -SqNo $SqNo -ViOp "G" -OrAF (Get-SalesbuildrQuoteTotal -Items $AllQuotationLines[$OpportunityId]) } catch { Write-Log ERROR "Fout bij sluiten Forecast: $_"; $Flow2Complete = $false }
     #         continue
     #     }
 
@@ -860,7 +919,7 @@ try {
     #             -QuId         $QuId `
     #             -DbId         $DbId `
     #             -Omschrijving $Opportunity.name `
-    #             -FcNo         $ForecastSqNo `
+    #             -FcNo         $SqNo `
     #             -Regels       $Regels
     #         $VoorcalculatieGelukt = $true
     #     } catch {
@@ -871,11 +930,34 @@ try {
     #     # Sluit de Forecast in AFAS — alleen als de Voorcalculatie succesvol is aangemaakt
     #     if ($VoorcalculatieGelukt) {
     #         try {
-    #             Close-AfasForecast -Connector $ConnForecastUpdate -PrId $DbId -SqNo $ForecastSqNo
+    #             Close-AfasForecast -Connector $ConnForecastUpdate -PrId $DbId -SqNo $SqNo -ViOp "G" -OrAF (Get-SalesbuildrQuoteTotal -Items $AllQuotationLines[$OpportunityId])
     #         } catch {
-    #             Write-Log ERROR "[$OpportunityId] Fout bij sluiten Forecast [SqNo $ForecastSqNo] in AFAS: $_"
+    #             Write-Log ERROR "[$OpportunityId] Fout bij sluiten Forecast [SqNo $SqNo] in AFAS: $_"
     #             $Flow2Complete = $false
     #         }
+    #     }
+    # }
+
+    # # ── Stap 2c: Lost-Opportunities — alleen de AFAS Forecast op N sluiten ──
+    # #
+    # # Geen artikels/voorcalc: een Lost-forecast wordt enkel afgesloten. De
+    # # CmForecast-sleutel (verkooprelatie/PrId + volgnummer/SqNo) parsen we uit de
+    # # externalIdentifier (zelfde formaat als de Won-tak) — geen re-fetch nodig.
+    # foreach ($Opportunity in $LostOpportunities) {
+    #     $OpportunityId = $Opportunity.id
+    #     if ($Opportunity.externalIdentifier -notmatch '^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$') {
+    #         Write-Log ERROR "[$OpportunityId] Onverwacht externalIdentifier-formaat '$($Opportunity.externalIdentifier)' — kan PrId/SqNo niet parsen, overgeslagen"
+    #         $Flow2Complete = $false
+    #         continue
+    #     }
+    #     $SqNo = [int]$Matches.sqno   # CmForecast @SqNo (volgnummer)
+    #     $DbId = $Matches.pr          # CmForecast @PrId (verkooprelatie)
+
+    #     try {
+    #         Close-AfasForecast -Connector $ConnForecastUpdate -PrId $DbId -SqNo $SqNo -ViOp "N"
+    #     } catch {
+    #         Write-Log ERROR "[$OpportunityId] Fout bij sluiten Forecast [SqNo $SqNo] als Lost (N) in AFAS: $_"
+    #         $Flow2Complete = $false
     #     }
     # }
 

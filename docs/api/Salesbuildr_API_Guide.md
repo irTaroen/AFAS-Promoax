@@ -738,14 +738,17 @@ Concrete endpoint usage and field mappings as implemented by the forecast sync s
 PUT /public-api/opportunity/ext/{externalIdentifier}
 ```
 
-`{externalIdentifier}` is built as `afas-Forecast-{SqNo}` from the AFAS `Salesbuildr_Forecasts` GetConnector record. Skipped (not upserted) if the existing Opportunity's `statusId` is already `"closed"`.
+`{externalIdentifier}` is built as `afas-Forecast-{forecast}-{volgnummer}-{verkooprelatie}` from the AFAS `Salesbuildr_Forecasts` GetConnector record (e.g. `afas-Forecast-11310-42-10654`). Skipped (not upserted) if the existing Opportunity's `statusId` is already `"closed"`.
+
+> **Three distinct fields — don't conflate them.** `forecast` is a globally-unique AFAS forecast id (e.g. `11310`), used as the `QuId` on the Voorcalculatie — it is **not** the CmForecast key. `volgnummer` is the CmForecast `SqNo` (e.g. `42`). `verkooprelatie` is the AFAS debtor code = CmForecast `PrId` (e.g. `"10654"`), also used as `DbId` on the Voorcalculatie. Encoding all three in the `externalIdentifier` lets Flow 2 parse the CmForecast key straight from the identifier — via regex `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$` — with **no re-fetch** of the Forecast.
 
 | AFAS field | Salesbuildr field | Notes |
 |---|---|---|
-| `forecast` | URL `externalIdentifier` | Integer `SqNo`, becomes `afas-Forecast-{SqNo}` |
+| `forecast` | URL `externalIdentifier` (part 1) | Globally-unique AFAS forecast id, e.g. `11310` — also used as the `KnQuotation.QuId` |
+| `volgnummer` | URL `externalIdentifier` (part 2) | CmForecast `SqNo`, e.g. `42` |
+| `verkooprelatie` | URL `externalIdentifier` (part 3) | CmForecast `PrId` (AFAS debtor code), e.g. `"10654"`. **Not** the company key — that's `organisatie`. |
 | `forecastOmschrijving` | `name` | |
 | `organisatie` | `companyExtId` | AFAS organisatienummer → `afas-Organisatie-{organisatie}` (matches the org-sync key). Forecast is **skipped + logged** if no such Company exists in Salesbuildr. |
-| `verkooprelatie` | — (Flow 2 only) | AFAS debtor code = `PrId`/`DbId`. **Not** the company key; re-fetched from AFAS by `SqNo` in Flow 2. |
 | `scoringkans` | `probability` | 0–100, no conversion needed |
 | `bedragVerwacht` | `onetimeRevenue` | |
 | `einddatumVerwacht` | `expectedCloseDate` | ISO `yyyy-MM-dd`; only set if not null |
@@ -771,7 +774,7 @@ GET /public-api/quote?filters=opportunity.id:{id}&size=100
 
 > ⚠️ **Filter key is `opportunity.id`, not `opportunityId`.** The documented example (`filters=statusId:approved,opportunityId:opp123`) is wrong for this field — `filters=opportunityId:{id}` returns `total: 0` on the Promax tenant even when a matching quote exists, and a bare `?opportunityId={id}` query param throws a 400 validation error. The correct filter key is the nested field name `opportunity.id` (colon URL-encoded as `%3A`, same as `statusId%3Aclosed` above), which fetches server-side per-opportunity — no bulk fetch or client-side cache needed. The quote→opportunity link lives in `QuoteResponseDto.opportunity` (`{ id, name, ... }`).
 
-Among the returned quotes, the one with `primary: true` is used (fallback: most recent `status: "approved"` by `approvedAt`). Note: `primary` is **per-opportunity** — every quote reports `primary: true` for its own opportunity — so it only disambiguates once the set is already narrowed to a single opportunity.
+Among the returned quotes, the one with `primary: true` is used — **no fallback** to any other approved quote. A missing or non-`approved` primary quote is not treated as an error; it drives the Lost categorization below. Note: `primary` is **per-opportunity** — every quote reports `primary: true` for its own opportunity — so it only disambiguates once the set is already narrowed to a single opportunity.
 
 ### Quote line → AFAS `KnQuotationLine`
 
@@ -793,10 +796,34 @@ When a missing article is created in AFAS (Flow 2 step 2a), its **artikelgroep**
 
 So: quote line `category.id` → category's `costCenterId` → `Grp`. A cost center missing from the config mapping causes the article **and its whole opportunity** to be skipped (WARNING, watermark held for retry). ⚠️ The API exposes only `costCenterId` (an id) — there is **no** cost-center name/label endpoint, so the config keys are opaque ids (label them in comments).
 
+### Won/Lost categorization
+
+Each closed Opportunity is categorized strictly by its **primary quote** (`primary: true` — no fallback to any other approved quote):
+
+| Outcome | Condition | Actions |
+|---|---|---|
+| **Won** (`ViOp = "G"`) | primary quote exists **and** `status == "approved"` | create missing Articles, create Voorcalculatie, close Forecast with `G` + `OrAF` |
+| **Lost** (`ViOp = "N"`) | no primary quote, **or** primary quote `status != "approved"` | close Forecast with `N` only — no Articles, no Voorcalculatie |
+
+A missing/unapproved primary quote is **not** an error — it's a legitimate Lost outcome and still advances the watermark once the Forecast is closed successfully. Only genuine API/network failures (and unmapped cost centers, missing Companies, etc.) hold the watermark for retry.
+
+### OrAF (total quote amount)
+
+`OrAF` on the Forecast-close call is computed client-side from the primary quote's `items`, since `QuoteResponseDto` has no ready-made total field:
+
+```
+OrAF = Σ (price × quantity × (1 - discount))
+```
+
+`discount` is a decimal fraction (`0.12` = 12%, `0.5` = 50%); values near zero (e.g. `-1e-6`) are rounding noise and treated as no discount. `setupPrice` and the quote-level `discount` (always empty in practice) are ignored. `OrAF` is included only when closing as Won — omitted entirely for Lost.
+
 ### Close the originating Forecast (`OpportunityResponseDto` → AFAS)
 
-- `externalIdentifier` → parsed to `SqNo` by stripping the `afas-Forecast-` prefix
-- `PrId` = the AFAS `verkooprelatie`. This is **not** on the Opportunity (`companyExtId` holds the organisatienummer), so the Forecast is re-fetched from AFAS by `SqNo` (`GET Salesbuildr_Forecasts?filterfieldids=forecast&filtervalues={SqNo}&operatortypes=1`) to read `verkooprelatie`.
+Flow 2 no longer re-fetches the AFAS Forecast — the composite CmForecast key and the Voorcalculatie id are all parsed directly from the Opportunity's `externalIdentifier` via `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$`:
+
+- `SqNo` = `$Matches.sqno` (`volgnummer`)
+- `PrId` = `$Matches.pr` (`verkooprelatie`)
+- `QuId` (Voorcalculatie / idempotency key) = `$Matches.fc` (the AFAS `forecast` id)
 
 See [AFAS_API_Guide.md](AFAS_API_Guide.md) for the resulting `CmForecast`/`KnQuotation`/`FbItemArticle` payloads.
 
