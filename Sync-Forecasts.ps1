@@ -629,11 +629,13 @@ try {
     # nodig. Alleen categorieën met een ingevulde AFAS-id worden opgenomen; een
     # (nog) niet gemapte categorie ontbreekt in de map en laat stap 2a het artikel
     # overslaan. Gebruikt in Flow 2 stap 2a bij het aanmaken van ontbrekende artikels.
-    $ArtikelgroepMap = @{}
+    $ArtikelgroepMap     = @{}   # SB category.id -> AFAS artikelgroep-code (Grp)
+    $ArtikelgroepNaamMap = @{}   # SB category.id -> AFAS artikelgroep-omschrijving (naam, alleen voor logging)
     $MappingXml = [xml](Get-Content "$PSScriptRoot\mapping-artikelgroepen.xml" -Raw)
     foreach ($c in $MappingXml.'mapping-artikelgroepen'.categorie) {
         if ($c.'SB-id' -and -not [string]::IsNullOrWhiteSpace($c.'AFAS-id')) {
-            $ArtikelgroepMap[$c.'SB-id'] = $c.'AFAS-id'
+            $ArtikelgroepMap[$c.'SB-id']     = $c.'AFAS-id'
+            $ArtikelgroepNaamMap[$c.'SB-id'] = $c.'AFAS-naam'
         }
     }
     Write-Log INFO "$($ArtikelgroepMap.Count) artikelgroep-mapping(s) (SB-categorie -> Grp) geladen uit mapping-artikelgroepen.xml"
@@ -661,7 +663,7 @@ try {
     # foreach ($Forecast in $AfasForecasts) {
 
     #     # Print de opgehaalde Forecast in de terminal
-    #     $Forecast | Format-List | Out-String | Write-Host
+    #     Write-Log INFO "[Flow 1] Forecast $($Forecast.forecast) | '$($Forecast.forecastOmschrijving)' | verkooprelatie (klantnr) $($Forecast.verkooprelatie) | volgnummer $($Forecast.volgnummer)"
 
     #     # Bevestigde veldnamen (Salesbuildr_Forecasts GetConnector):
     #     # 'forecast'       = uniek AFAS forecast-id -> gebruikt als QuId (voorcalc-offertenr)
@@ -674,6 +676,7 @@ try {
     #     # verder te kunnen: forecast-id (QuId) + volgnummer (@SqNo) + verkooprelatie (@PrId).
     #     # Formaat: afas-Forecast-{forecast}-{volgnummer}-{verkooprelatie}.
     #     $ExternalId = "afas-Forecast-$($Forecast.forecast)-$($Forecast.volgnummer)-$($Forecast.verkooprelatie)"
+    #     Write-Log INFO "[Flow 1] externalId voor SalesBuildr: $ExternalId"
 
     #     # Company-koppeling: de org-sync schrijft companies weg als
     #     # "afas-Organisatie-{organisatienummer}". Dit is dezelfde sleutel.
@@ -763,11 +766,6 @@ try {
 
     Write-Log INFO "$($ClosedOpportunities.Count) gesloten Opportunities gevonden"
 
-    # Print de opgehaalde Opportunities in de terminal (debug / dry-run inspectie)
-    # foreach ($Opportunity in $ClosedOpportunities) {
-    #     $Opportunity | Format-List | Out-String | Write-Host
-    # }
-
     # Batch-watermark voor Flow 2 (zie toelichting bij Flow 1).
     $Flow2Complete = $true
 
@@ -793,6 +791,7 @@ try {
     foreach ($Opportunity in $ClosedOpportunities) {
         # Bevestigd veldnaam: id (OpportunityResponseDto)
         $OpportunityId = $Opportunity.id
+        Write-Log INFO "[Flow 2] Opportunity $OpportunityId | externalId $($Opportunity.externalIdentifier)"
 
         # Haal de primaire quote op via de quote-endpoint gefilterd op opportunity.id.
         # OpportunityResponseDto heeft geen quoteId-veld — dit is de enige manier.
@@ -805,6 +804,10 @@ try {
             continue
         }
 
+        if ($null -ne $Quote) {
+            Write-Log INFO "[Flow 2] Quote $($Quote.id) (nr $($Quote.number)) | status '$($Quote.status)' | klant '$($Quote.company.name)'"
+        }
+
         if ($null -ne $Quote -and $Quote.status -eq 'approved') {
             # ── Won ──
             # Bevestigd veldnaam: items (QuoteResponseDto) — NIET 'lines'
@@ -813,8 +816,6 @@ try {
             $WonOpportunities += $Opportunity
 
             Write-Log INFO "[$OpportunityId] WON — primaire quote 'approved' ($($Lines.Count) regel(s)); artikels + voorcalc + Forecast sluiten (G)"
-            # $Quote | Format-List | Out-String | Write-Host
-            # $Lines | Format-List | Out-String | Write-Host
         } else {
             # ── Lost ──
             $Reden = if ($null -eq $Quote) { "geen primaire quote" } else { "primaire quote status = '$($Quote.status)'" }
@@ -844,21 +845,35 @@ try {
     $FailedItemCodes = @()
 
     foreach ($ItemCode in $AllItemCodes) {
+        # Bronregel voor de omschrijving (name), de item-ids en de categorie.
+        $BronRegel = $AllQuotationLines.Values | ForEach-Object { $_ } |
+            Where-Object { $_.mpn -eq $ItemCode } | Select-Object -First 1
+
+        # SB-categorie (van de regel) en de gemapte AFAS-artikelgroep (code + naam).
+        $SbCatId    = $BronRegel.category.id
+        $SbCatNaam  = $BronRegel.category.name
+        $Artikelgroep     = Get-AfasArtikelgroep -Category $BronRegel.category -ArtikelgroepMap $ArtikelgroepMap
+        $ArtikelgroepNaam = if ($SbCatId -and $ArtikelgroepNaamMap.ContainsKey($SbCatId)) { $ArtikelgroepNaamMap[$SbCatId] } else { $null }
+
         # Bestaanscontrole: per mpn een gefilterde lookup (itemCode = ...), i.p.v. de
         # volledige catalogus van 30.000+ artikels op te halen.
-        if ($null -ne (Get-AfasArtikelByItemCode -Connector $ConnArtikelenGet -ItemCode $ItemCode)) {
+        $BestaatInAfas = $null -ne (Get-AfasArtikelByItemCode -Connector $ConnArtikelenGet -ItemCode $ItemCode)
+
+        Write-Log INFO ("[Flow 2] Artikel '{0}' | mpn/ItCd {1} | item-id {2} | product-id {3} | SB-cat '{4}' ({5}) | AFAS-cat {6} ({7}) | bestaat in AFAS: {8}" -f `
+            $BronRegel.name, $ItemCode, $BronRegel.id, $BronRegel.product.id, `
+            $SbCatNaam, $SbCatId, `
+            $(if ($ArtikelgroepNaam) { "'$ArtikelgroepNaam'" } else { '-' }), `
+            $(if ($Artikelgroep) { $Artikelgroep } else { 'niet gemapt' }), `
+            $BestaatInAfas)
+
+        if ($BestaatInAfas) {
             Write-Log INFO "Artikel [$ItemCode] bestaat al in AFAS — overgeslagen"
             continue
         }
 
-        # Bronregel voor de omschrijving (name) én de categorie (voor de artikelgroep).
-        $BronRegel = $AllQuotationLines.Values | ForEach-Object { $_ } |
-            Where-Object { $_.mpn -eq $ItemCode } | Select-Object -First 1
-
-        # Artikelgroep (Grp) bepalen: directe mapping category.id -> Grp.
-        $Artikelgroep = Get-AfasArtikelgroep -Category $BronRegel.category -ArtikelgroepMap $ArtikelgroepMap
+        # Artikelgroep (Grp) is verplicht bij aanmaken; ontbreekt de mapping -> overslaan.
         if ([string]::IsNullOrWhiteSpace($Artikelgroep)) {
-            Write-Log WARNING "Artikel [$ItemCode] overgeslagen: categorie '$($BronRegel.category.name)' (id $($BronRegel.category.id)) niet gemapt in mapping-artikelgroepen.xml"
+            Write-Log WARNING "Artikel [$ItemCode] overgeslagen: categorie '$SbCatNaam' (id $SbCatId) niet gemapt in mapping-artikelgroepen.xml"
             $FailedItemCodes += $ItemCode
             $Flow2Complete = $false
             continue
@@ -892,6 +907,7 @@ try {
         # Idempotentie: bestaat de Voorcalculatie al in AFAS? (filter op offerte = QuId).
         # Zo ja: overslaan (het sluiten van de Forecast volgt in een latere stap).
         $BestaandeVoorcalc = Get-AfasRecordByExternalId -Connector $ConnVoorcalcGet -ExternalId $QuId
+        Write-Log INFO "[Flow 2] Voorcalc (offerte) $QuId | bestaat in AFAS: $($null -ne $BestaandeVoorcalc)"
         if ($null -ne $BestaandeVoorcalc) {
             Write-Log INFO "[$OpportunityId] Voorcalculatie al aanwezig in AFAS ($QuId) — overgeslagen"
             continue

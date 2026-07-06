@@ -1600,32 +1600,46 @@ Won (`ViOp: "G"`) example above; Lost is identical except `"ViOp": "N"` and **no
 
 ```json
 { "KnQuotation": { "Element": {
-    "Fields": { "QuId": "11310", "DbId": "<verkooprelatie>",
-                "QuDa": "...", "Ds": "...", "CuId": "EUR", "FcNo": 42 },
-    "Objects": { "KnQuotationLine": { "Element": [
-        { "Fields": { "ItCd": "...", "Qu": 1, "UP": 100.00 } }
-    ]}}
+    "@QuId": "11310",
+    "Fields": { "QuDa": "2026-07-06", "DbId": "10654", "FcNo": 42 },
+    "Objects": [ { "KnQuotationLine": { "Element": [ { "Fields": {
+        "VaIt": "2", "ItCd": "EP2-20095", "QuUn": "1", "Qu": "1", "QuSa": "1",
+        "Upri": "1749.03", "AmCo": "1381.73"
+    } } ] } } ]
 }}}
 ```
 
-- `QuId` = the AFAS `forecast` id (e.g. `"11310"`) — no prefix for now (may be added later); doubles as the idempotency key (checked via the `Salesbuildr_Voorcalculatie` GetConnector, see filter above). Only created for Won opportunities.
-- `FcNo` = `volgnummer`/`SqNo`, links the quotation back to the originating Forecast.
-- Line field `UP` is unit price — **not** `unitPrice`.
+- `@QuId` = the AFAS `forecast` id (e.g. `"11310"`) — an **Element-level `@`-attribute**, like `CmForecast`'s `@PrId`/`@SqNo`, **not** a `Fields` entry; doubles as the idempotency key (checked via the `Salesbuildr_Voorcalculatie` GetConnector, see filter above). Only created for Won opportunities.
+- `DbId` (verkooprelatie) and `FcNo` (volgnummer/`SqNo`) are parsed straight from the Opportunity's `externalIdentifier` — no re-fetch of the Forecast.
+- `QuDa` is currently the current date (placeholder — revisit later for a real quote date).
+- `Objects` holds one `KnQuotationLine` with one `Element` per quote line.
+- Line fields: `VaIt` = `"2"` product / `"1"` service — product/service grouping isn't implemented yet, so this is currently hardcoded `"2"` for every line. `ItCd` = the line's `mpn`. `QuUn`/`Qu`/`QuSa` are all set to the line `quantity`. `Upri` = per-unit sell price (`price`), `AmCo` = per-unit cost (`cost`). All amounts are serialized as invariant-culture strings with a **dot** decimal separator (e.g. `"1749.03"`, never `"1749,03"`).
+- ⚠️ **Known caveat:** `Upri` uses the raw per-unit `price` and does **not** apply the item `discount` — unlike `CmForecast.OrAF` (see above), which does apply discount. Pending confirmation; not yet fixed in code.
+- The OLD shape — `QuId`/`DbId`/`QuDa`/`Ds`/`CuId`/`FcNo` all inside `Fields`, with line fields `ItCd`/`Qu`/`UP` — is obsolete.
 
 ### Create a minimal Article (`FbItemArticle`, `POST`)
 
-Created on demand when a quote line references an item code not yet present in AFAS (checked via `Salesbuildr_Artikelen` GetConnector, filtered on `itemCode`).
+Created on demand when a quote line references an item code not yet present in AFAS — checked via a **targeted, per-`mpn` filtered lookup** against `Salesbuildr_Artikelen` (not a bulk catalog fetch — AFAS holds 30,000+ articles):
+
+```
+GET /connectors/Salesbuildr_Artikelen?filterfieldids=itemCode&filtervalues={mpn}&operatortypes=1&skip=0&take=1
+```
 
 ```json
 { "FbItemArticle": { "Element": { "Fields": {
-    "ItCd": "...", "Ds": "...", "Ds_1043": "...",
-    "Grp": "...", "VaTp": "0", "BiSt": false, "CoLa": "NL", "Bl": false
+    "ItCd": "EP2-20095", "AuId": false,
+    "Ds": "Microsoft Surface Pro 11 Copilot+ PC ...", "Grp": "70",
+    "BiUn": "St", "VaRc": "2"
 }}}}
 ```
 
 > **Promax item code + article group:**
 > - `ItCd` = the Salesbuildr quote line's **`mpn`** (always — the `product` field is nullable). Lines without an `mpn` are skipped.
-> - `Grp` (artikelgroep, **required**) is derived from the Salesbuildr **cost center**, resolved in two hops: quote line `category.id` → `GET /public-api/category` → `costCenterId` → config mapping (`<artikelgroepmapping><costcenter>` in `config.xml`) → `Grp`. A cost center that isn't mapped causes the article — and its whole opportunity — to be skipped with a WARNING (watermark held for retry). See `Get-AfasArtikelgroep` / `New-AfasArtikel` and Flow 2 step 2a.
+> - `AuId` = always `false` (item code is supplied explicitly, no AFAS auto-numbering).
+> - `Ds` = the item `name`, capped at 100 characters (AFAS limit).
+> - `Grp` (artikelgroep, **required**) is now a **direct one-hop** lookup: quote line `category.id` → `mapping-artikelgroepen.xml` (`<categorie SB-id="..." AFAS-id="..." AFAS-naam="..."/>`) → `Grp`. The old two-hop route — `GET /public-api/category` → `costCenterId` → `config.xml`'s `<artikelgroepmapping><costcenter>` — is obsolete; that config block is now unused. A category missing from the mapping file, or mapped with an empty `AFAS-id`, causes the article — and its whole opportunity — to be skipped with a WARNING (watermark held for retry). See `Get-AfasArtikelgroep` / `New-AfasArtikel` and Flow 2 step 2a.
+> - `BiUn` = `"St"` and `VaRc` = `"2"` — fixed placeholders for now.
+> - The OLD fields `Ds_1043`, `VaTp`, `BiSt`, `CoLa`, `Bl` are no longer sent.
 
 ---
 

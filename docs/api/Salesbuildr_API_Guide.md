@@ -781,20 +781,30 @@ Among the returned quotes, the one with `primary: true` is used — **no fallbac
 | Salesbuildr field (`QuoteItemResponseDto`) | AFAS field | Notes |
 |---|---|---|
 | `mpn` | `ItCd` | Item code — **always** the `mpn`, for both article lookup and creation. `product` is **nullable** (free-form lines have no catalog product) so it is **not** used. Lines without an `mpn` are skipped. |
-| `name` | `description` | |
-| `quantity` | `Qu` | |
-| `price` | `UP` | **Not** `unitPrice` |
-| `category` → cost center | `Grp` (article group) | See below — set only when the article is **created** (`FbItemArticle`), not on the quote line. |
+| `name` | `Ds` (on article create) | Also used as the quote-line label; capped at 100 chars for `FbItemArticle.Ds`. |
+| `quantity` | `QuUn` / `Qu` / `QuSa` | All three `KnQuotationLine` quantity fields are set to the same value. |
+| `price` | `Upri` | Per-unit sell price. **Not** `unitPrice`; raw `price`, **discount is not applied** (see caveat below). |
+| `cost` | `AmCo` | Per-unit cost price on the `KnQuotationLine`. |
+| `category` `{ id, name }` | `Grp` (article group) | See below — set only when the article is **created** (`FbItemArticle`), not on the quote line. |
 
-### Article group (`Grp`) via cost center
+⚠️ **Caveat:** `Upri` uses the raw per-unit `price` and does not apply the item `discount`, whereas `CmForecast.OrAF` (see below) *does* apply discount. Known inconsistency, pending confirmation — not yet fixed in code.
 
-When a missing article is created in AFAS (Flow 2 step 2a), its **artikelgroep** (`FbItemArticle.Grp`) is required and comes from the Salesbuildr **cost center** — resolved in two hops, because the cost center is **not** on the quote item:
+### Article group (`Grp`) via `mapping-artikelgroepen.xml`
 
-1. `QuoteItemResponseDto.category` gives only `{ id, name }` — **no** cost center.
-2. `costCenterId` lives on the full **Category** resource (`CategoryResponseDto.costCenterId`), fetched via `GET /public-api/category` (a **bare array**, no pagination, cached per run).
-3. `config.xml` `<artikelgroepmapping><costcenter id="{costCenterId}" grp="{Grp}"/>` maps the cost center to the AFAS group.
+When a missing article is created in AFAS (Flow 2 step 2a), its **artikelgroep** (`FbItemArticle.Grp`) is required and is now resolved in a **direct one hop**, via the repo file `mapping-artikelgroepen.xml`:
 
-So: quote line `category.id` → category's `costCenterId` → `Grp`. A cost center missing from the config mapping causes the article **and its whole opportunity** to be skipped (WARNING, watermark held for retry). ⚠️ The API exposes only `costCenterId` (an id) — there is **no** cost-center name/label endpoint, so the config keys are opaque ids (label them in comments).
+```xml
+<mapping-artikelgroepen>
+  <categorie SB-id="..." SB-naam="..." AFAS-id="70" AFAS-naam="Hardware"/>
+</mapping-artikelgroepen>
+```
+
+- `SB-id` = the quote line's `category.id` directly (`QuoteItemResponseDto.category.id`) — no `GET /public-api/category` fetch needed.
+- `AFAS-id` = the AFAS artikelgroep code (`Grp`).
+- `AFAS-naam` = the artikelgroep description, used only for logging.
+- Only categories with a non-empty `AFAS-id` are loaded into the in-memory map. A category absent from the file, or present with an empty `AFAS-id`, is "not mapped" — the article, and its whole opportunity, are skipped (WARNING, watermark held for retry).
+
+The old two-hop route — quote line `category.id` → `GET /public-api/category` → `costCenterId` → `config.xml`'s `<artikelgroepmapping><costcenter id grp>` — is obsolete; that config block is now unused (`Get-SalesbuildrAllCategories` and the `/public-api/category` fetch were removed).
 
 ### Won/Lost categorization
 
@@ -805,7 +815,7 @@ Each closed Opportunity is categorized strictly by its **primary quote** (`prima
 | **Won** (`ViOp = "G"`) | primary quote exists **and** `status == "approved"` | create missing Articles, create Voorcalculatie, close Forecast with `G` + `OrAF` |
 | **Lost** (`ViOp = "N"`) | no primary quote, **or** primary quote `status != "approved"` | close Forecast with `N` only — no Articles, no Voorcalculatie |
 
-A missing/unapproved primary quote is **not** an error — it's a legitimate Lost outcome and still advances the watermark once the Forecast is closed successfully. Only genuine API/network failures (and unmapped cost centers, missing Companies, etc.) hold the watermark for retry.
+A missing/unapproved primary quote is **not** an error — it's a legitimate Lost outcome and still advances the watermark once the Forecast is closed successfully. Only genuine API/network failures (and unmapped categories, missing Companies, etc.) hold the watermark for retry.
 
 ### OrAF (total quote amount)
 
