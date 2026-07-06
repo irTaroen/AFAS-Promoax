@@ -90,6 +90,40 @@ function ConvertFrom-ForecastExternalId {
     }
 }
 
+function Get-SyncWatermark {
+    # Leest één sync-watermerk uit het gezamenlijke state-bestand
+    # (configs\LastSyncDates.xml). Ontbrekend bestand/knoop -> Epoch, zodat een
+    # eerste run alles ophaalt. Naam is de flow-sleutel, bv. 'Flow1' / 'Flow2'.
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $Name
+    )
+    $Epoch = [datetime]'1970-01-01'
+    if (-not (Test-Path $Path)) { return $Epoch }
+    $xml  = [xml](Get-Content $Path -Raw)
+    $node = $xml.SelectSingleNode("/SyncDates/$Name")
+    if ($null -eq $node -or [string]::IsNullOrWhiteSpace($node.InnerText)) { return $Epoch }
+    return [datetime]::Parse($node.InnerText, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+}
+
+function Set-SyncWatermark {
+    # Schrijft één sync-watermerk naar het gezamenlijke state-bestand en laat de
+    # andere flow-waarde ongemoeid. Datum wordt round-trip ('o') opgeslagen.
+    param(
+        [Parameter(Mandatory)] [string]   $Path,
+        [Parameter(Mandatory)] [string]   $Name,
+        [Parameter(Mandatory)] [datetime] $Date
+    )
+    $xml = if (Test-Path $Path) { [xml](Get-Content $Path -Raw) } else { [xml]'<SyncDates/>' }
+    $node = $xml.DocumentElement.SelectSingleNode($Name)
+    if ($null -eq $node) {
+        $node = $xml.CreateElement($Name)
+        $xml.DocumentElement.AppendChild($node) | Out-Null
+    }
+    $node.InnerText = $Date.ToString('o')
+    $xml.Save($Path)
+}
+
 #endregion
 
 #region ── AFAS ──────────────────────────────────────────────────────────────
@@ -556,14 +590,12 @@ try {
 
     $config = (Read-XMLConfig -Path "$PSScriptRoot\configs\config.xml").configuration
 
-    # State files
-    $ForecastStateFile     = "$PSScriptRoot\configs\LastForecastSyncDate.xml"
-    $OpportunityStateFile  = "$PSScriptRoot\configs\LastSyncDate_Opportunities.xml"
+    # State: beide flow-watermerken staan in één bestand (Flow1 = Forecasts,
+    # Flow2 = Opportunities). Zie Get-/Set-SyncWatermark.
+    $SyncStateFile = "$PSScriptRoot\configs\LastSyncDates.xml"
 
-    $Epoch = [datetime]'1970-01-01'
-
-    $LastForecastSync    = If (Test-Path $ForecastStateFile)    { Import-Clixml $ForecastStateFile }    Else { $Epoch }
-    $LastOpportunitySync = If (Test-Path $OpportunityStateFile) { Import-Clixml $OpportunityStateFile } Else { $Epoch }
+    $LastForecastSync    = Get-SyncWatermark -Path $SyncStateFile -Name 'Flow1'
+    $LastOpportunitySync = Get-SyncWatermark -Path $SyncStateFile -Name 'Flow2'
 
     # Credentials, omgeving en MODE komen plaintext uit config.xml.
     # afas.token is het <token>…</token> XML; Connect-Afas base64-encodeert
@@ -962,7 +994,7 @@ try {
     If (-not $Flow1Enabled) {
         Write-Log INFO "Flow 1 uitgeschakeld — state ongewijzigd"
     } ElseIf ($Flow1Complete) {
-        Get-Date | Export-Clixml -Path $ForecastStateFile -Force
+        Set-SyncWatermark -Path $SyncStateFile -Name 'Flow1' -Date (Get-Date)
         Write-Log INFO "Flow 1 state bijgewerkt"
     } else {
         Write-Log WARNING "Flow 1 state NIET bijgewerkt — niet alle Forecasts verwerkt; wordt opnieuw geprobeerd bij volgende run"
@@ -971,7 +1003,7 @@ try {
     If (-not $Flow2Enabled) {
         Write-Log INFO "Flow 2 uitgeschakeld — state ongewijzigd"
     } ElseIf ($Flow2Complete) {
-        Get-Date | Export-Clixml -Path $OpportunityStateFile -Force
+        Set-SyncWatermark -Path $SyncStateFile -Name 'Flow2' -Date (Get-Date)
         Write-Log INFO "Flow 2 state bijgewerkt"
     } else {
         Write-Log WARNING "Flow 2 state NIET bijgewerkt — niet alle Opportunities verwerkt; wordt opnieuw geprobeerd bij volgende run"
