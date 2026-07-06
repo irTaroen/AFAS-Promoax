@@ -179,6 +179,25 @@ function Get-AfasForecastBySqNo {
     return $null
 }
 
+function Get-AfasArtikelByItemCode {
+    # Controleert of een Artikel bestaat in AFAS via de Salesbuildr_Artikelen
+    # GetConnector, server-side gefilterd op itemCode (operatortypes=1 = gelijk aan).
+    # Veel efficiënter dan de hele catalogus ophalen (AFAS heeft 30.000+ artikels):
+    # per mpn één kleine, gefilterde call. Geeft de matchende rij terug, of $null
+    # als het artikel niet bestaat.
+    param(
+        [string]$Connector,
+        [string]$ItemCode
+    )
+
+    $url      = "$($Global:AfasRestUrl)/connectors/$($Connector)" +
+                "?filterfieldids=itemCode&filtervalues=$([uri]::EscapeDataString($ItemCode))&operatortypes=1&skip=0&take=1"
+    $response = Invoke-RestMethod -Uri $url -Headers $Global:AfasHeaders -Method Get
+
+    if ($response.rows.Count -gt 0) { return $response.rows[0] }
+    return $null
+}
+
 function Invoke-AfasUpdateConnector {
     # POST (insert) of PUT (update) naar een AFAS UpdateConnector
     param(
@@ -197,7 +216,7 @@ function New-AfasArtikel {
     # Maakt een minimaal Artikel aan in AFAS via UpdateConnector FbItemArticle.
     # VaTp "0" = standaard artikel, BiSt false = geen voorraad bijhouden.
     # Grp = artikelgroep (verplicht: elk artikel hoort bij een groep) — bepaald
-    # uit de Salesbuildr-categorie via de mapping in config.xml.
+    # uit de Salesbuildr-categorie via mapping-artikelgroepen.xml (category.id -> Grp).
     param(
         [string]$Connector,
         [string]$ItemCode,
@@ -227,25 +246,18 @@ function New-AfasArtikel {
 }
 
 function Get-AfasArtikelgroep {
-    # Vertaalt een Salesbuildr-productcategorie naar een AFAS artikelgroep (Grp) in
-    # twee stappen, want de cost center staat NIET op de quote-regel/category-inline:
-    #   1) category.id  -> costCenterId   (via CategoryCostCenterMap, uit /public-api/category)
-    #   2) costCenterId -> Grp            (via ArtikelgroepMap, uit config.xml)
-    # Geeft $null als de categorie ontbreekt, geen cost center heeft, of die cost
-    # center niet in de config-mapping staat — de aanroeper slaat het artikel dan
-    # over met een WARNING (zie Flow 2 stap 2a).
+    # Vertaalt een Salesbuildr-productcategorie naar een AFAS artikelgroep (Grp) via
+    # de directe mapping category.id -> Grp (uit mapping-artikelgroepen.xml). De
+    # quote-regel draagt zelf category.id, dus geen cost-center-omweg meer nodig.
+    # Geeft $null als de categorie ontbreekt of (nog) niet gemapt is — de aanroeper
+    # slaat het artikel dan over met een WARNING (zie Flow 2 stap 2a).
     param(
-        $Category,                             # SB category-object ({ id, name, ... }) of $null
-        [hashtable]$CategoryCostCenterMap,     # category.id  -> costCenterId
-        [hashtable]$ArtikelgroepMap            # costCenterId -> Grp
+        $Category,                    # SB category-object ({ id, name, ... }) of $null
+        [hashtable]$ArtikelgroepMap   # category.id -> Grp
     )
 
     if ($null -eq $Category -or [string]::IsNullOrWhiteSpace($Category.id)) { return $null }
-    if (-not $CategoryCostCenterMap.ContainsKey($Category.id))              { return $null }
-
-    $costCenterId = $CategoryCostCenterMap[$Category.id]
-    if ([string]::IsNullOrWhiteSpace($costCenterId))                        { return $null }
-    if ($ArtikelgroepMap.ContainsKey($costCenterId)) { return $ArtikelgroepMap[$costCenterId] }
+    if ($ArtikelgroepMap.ContainsKey($Category.id)) { return $ArtikelgroepMap[$Category.id] }
     return $null
 }
 
@@ -469,22 +481,6 @@ function Get-SalesbuildrContactByEmail {
         Select-Object -First 1
 }
 
-function Get-SalesbuildrAllCategories {
-    # Haalt alle product-categorieën op en cachet ze in $Global:SalesbuildrCategoriesCache.
-    # Nodig omdat de cost center (costCenterId) NIET op de quote-regel of het inline
-    # category-object staat, maar op de volledige Category-resource (CategoryResponseDto).
-    # LET OP: /public-api/category geeft een KALE array terug (geen {results,total})
-    # en kent GEEN paginering — één call haalt alles op.
-    if ($null -ne $Global:SalesbuildrCategoriesCache) { return $Global:SalesbuildrCategoriesCache }
-
-    $response = Invoke-SalesbuildrRequest -Uri "$($Global:SalesbuildrUri)/public-api/category"
-    $all = if ($response.results) { $response.results } else { $response }   # defensief
-
-    Write-Log INFO "$(@($all).Count) categorieën opgehaald en gecachet voor cost-center-koppeling"
-    $Global:SalesbuildrCategoriesCache = @($all)
-    return $Global:SalesbuildrCategoriesCache
-}
-
 function Get-SalesbuildrPrimaryQuote {
     # Haalt de PRIMAIRE Quote (primary:true) op voor een Opportunity, of $null.
     # De aanroeper bepaalt Won/Lost op basis van $quote.status -eq 'approved'.
@@ -606,13 +602,20 @@ try {
     $ConnVoorcalcGet    = $config.afas.connectors.voorcalculatie_get   # Salesbuildr_Voorcalculatie
     $ConnVoorcalcUpdate = $config.afas.connectors.voorcalculatie_update # KnQuotation
 
-    # Mapping Salesbuildr cost center (costCenterId) -> AFAS artikelgroep (Grp), uit
-    # config.xml. Gebruikt in Flow 2 stap 2a bij het aanmaken van ontbrekende artikels.
+    # Mapping SalesBuildr productcategorie (category.id) -> AFAS artikelgroep (Grp),
+    # uit mapping-artikelgroepen.xml. Eén directe hop: de quote-regel draagt zelf
+    # category.id, dus de cost-center-omweg (via /public-api/category) is niet meer
+    # nodig. Alleen categorieën met een ingevulde AFAS-id worden opgenomen; een
+    # (nog) niet gemapte categorie ontbreekt in de map en laat stap 2a het artikel
+    # overslaan. Gebruikt in Flow 2 stap 2a bij het aanmaken van ontbrekende artikels.
     $ArtikelgroepMap = @{}
-    foreach ($c in $config.afas.artikelgroepmapping.costcenter) {
-        if ($c -and -not [string]::IsNullOrWhiteSpace($c.id)) { $ArtikelgroepMap[$c.id] = $c.grp }
+    $MappingXml = [xml](Get-Content "$PSScriptRoot\mapping-artikelgroepen.xml" -Raw)
+    foreach ($c in $MappingXml.'mapping-artikelgroepen'.categorie) {
+        if ($c.'SB-id' -and -not [string]::IsNullOrWhiteSpace($c.'AFAS-id')) {
+            $ArtikelgroepMap[$c.'SB-id'] = $c.'AFAS-id'
+        }
     }
-    Write-Log INFO "$($ArtikelgroepMap.Count) artikelgroep-mapping(s) (cost center -> Grp) geladen uit config"
+    Write-Log INFO "$($ArtikelgroepMap.Count) artikelgroep-mapping(s) (SB-categorie -> Grp) geladen uit mapping-artikelgroepen.xml"
 
 
     ####################################################################
@@ -802,59 +805,52 @@ try {
 
     Write-Log INFO "Categorisatie: $($WonOpportunities.Count) Won (G), $($LostOpportunities.Count) Lost (N)"
 
-    # # Unieke artikelcodes over alle opportunities heen. De AFAS itemcode (ItCd) is
-    # # ALTIJD de 'mpn' van de quote-regel — het 'product'-veld kan leeg zijn (vrije
-    # # regel), dus daar mag niet op vertrouwd worden. Regels zonder mpn worden
-    # # overgeslagen (geen artikelcode -> niet aan te maken/te koppelen).
-    # $AllItemCodes = $AllQuotationLines.Values | ForEach-Object { $_ } |
-    #     ForEach-Object { $_.mpn } |
-    #     Where-Object { $_ } | Sort-Object -Unique
+    # ── Stap 2a: Ontbrekende Artikels in AFAS aanmaken (alleen Won-opportunities) ──
 
-    # Write-Log INFO "$($AllItemCodes.Count) unieke artikelcodes (mpn) gevonden in quotations"
+    # Unieke artikelcodes over alle Won-quotations. De AFAS itemcode (ItCd) is ALTIJD
+    # de 'mpn' van de quote-regel — het 'product'-veld kan leeg zijn (vrije regel),
+    # dus daar mag niet op vertrouwd worden. Regels zonder mpn hebben geen artikelcode
+    # en worden overgeslagen (niet aan te maken/te koppelen).
+    $AllItemCodes = @($AllQuotationLines.Values | ForEach-Object { $_ } |
+        ForEach-Object { $_.mpn } |
+        Where-Object { $_ } | Sort-Object -Unique)
 
-    # # Bevestigd veldnaam in Salesbuildr_Artikelen: 'itemCode' (maps to FbItemArticle.ItCd)
-    # $BestaandeArtikels  = Invoke-AfasGetConnector -Connector $ConnArtikelenGet
-    # $BestaandeItemCodes = $BestaandeArtikels | ForEach-Object { $_.itemCode }
+    Write-Log INFO "$($AllItemCodes.Count) unieke artikelcodes (mpn) gevonden in de gewonnen quotations"
 
-    # # category.id -> costCenterId, uit de (gecachte) SB-categorieën. Nodig om per
-    # # artikel de AFAS-artikelgroep (Grp) te bepalen (zie Get-AfasArtikelgroep).
-    # $CategoryCostCenterMap = @{}
-    # foreach ($cat in Get-SalesbuildrAllCategories) {
-    #     if ($cat.id) { $CategoryCostCenterMap[$cat.id] = $cat.costCenterId }
-    # }
+    # mpn's waarvoor geen artikelgroep bepaald kon worden -> in stap 2b wordt de
+    # hele opportunity overgeslagen (anders wijst de voorcalc-regel naar een
+    # niet-bestaand artikel). Zie de skip-logica in stap 2b.
+    $FailedItemCodes = @()
 
-    # # mpn's waarvoor geen artikelgroep bepaald kon worden -> in stap 2b wordt de
-    # # hele opportunity overgeslagen (anders wijst de voorcalc-regel naar een
-    # # niet-bestaand artikel). Zie de skip-logica in stap 2b.
-    # $FailedItemCodes = @()
+    foreach ($ItemCode in $AllItemCodes) {
+        # Bestaanscontrole: per mpn een gefilterde lookup (itemCode = ...), i.p.v. de
+        # volledige catalogus van 30.000+ artikels op te halen.
+        if ($null -ne (Get-AfasArtikelByItemCode -Connector $ConnArtikelenGet -ItemCode $ItemCode)) {
+            Write-Log INFO "Artikel [$ItemCode] bestaat al in AFAS — overgeslagen"
+            continue
+        }
 
-    # foreach ($ItemCode in $AllItemCodes) {
-    #     $ArtikelBestaat = $BestaandeItemCodes -contains $ItemCode
+        # Bronregel voor de omschrijving (name) én de categorie (voor de artikelgroep).
+        $BronRegel = $AllQuotationLines.Values | ForEach-Object { $_ } |
+            Where-Object { $_.mpn -eq $ItemCode } | Select-Object -First 1
 
-    #     If (-Not $ArtikelBestaat) {
-    #         # Bronregel voor de omschrijving (name) én de categorie (voor de artikelgroep).
-    #         $BronRegel = $AllQuotationLines.Values | ForEach-Object { $_ } |
-    #             Where-Object { $_.mpn -eq $ItemCode } | Select-Object -First 1
+        # Artikelgroep (Grp) bepalen: directe mapping category.id -> Grp.
+        $Artikelgroep = Get-AfasArtikelgroep -Category $BronRegel.category -ArtikelgroepMap $ArtikelgroepMap
+        if ([string]::IsNullOrWhiteSpace($Artikelgroep)) {
+            Write-Log WARNING "Artikel [$ItemCode] overgeslagen: categorie '$($BronRegel.category.name)' (id $($BronRegel.category.id)) niet gemapt in mapping-artikelgroepen.xml"
+            $FailedItemCodes += $ItemCode
+            $Flow2Complete = $false
+            continue
+        }
 
-    #         # Artikelgroep (Grp) bepalen: category.id -> costCenterId -> Grp.
-    #         $Artikelgroep = Get-AfasArtikelgroep -Category $BronRegel.category `
-    #             -CategoryCostCenterMap $CategoryCostCenterMap -ArtikelgroepMap $ArtikelgroepMap
-    #         If ([string]::IsNullOrWhiteSpace($Artikelgroep)) {
-    #             Write-Log WARNING "Artikel [$ItemCode] overgeslagen: cost center voor categorie '$($BronRegel.category.name)' (id $($BronRegel.category.id)) niet in artikelgroep-mapping"
-    #             $FailedItemCodes += $ItemCode
-    #             $Flow2Complete = $false
-    #             continue
-    #         }
-
-    #         try {
-    #             New-AfasArtikel -Connector $ConnArtikelenUpdate -ItemCode $ItemCode `
-    #                 -Omschrijving $BronRegel.name -Artikelgroep $Artikelgroep
-    #         } catch {
-    #             Write-Log ERROR "Fout bij aanmaken Artikel [$ItemCode]: $_"
-    #             $Flow2Complete = $false
-    #         }
-    #     }
-    # }
+        try {
+            New-AfasArtikel -Connector $ConnArtikelenUpdate -ItemCode $ItemCode `
+                -Omschrijving $BronRegel.name -Artikelgroep $Artikelgroep
+        } catch {
+            Write-Log ERROR "Fout bij aanmaken Artikel [$ItemCode]: $_"
+            $Flow2Complete = $false
+        }
+    }
 
     # # ── Stap 2b: Voorcalculatieregels aanmaken per Won-Opportunity (alleen Won) ──
 
