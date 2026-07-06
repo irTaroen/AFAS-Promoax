@@ -1,6 +1,13 @@
 <configuration>
   <!-- MODE: TEST = AFAS test-omgeving (resttest.afas.online), PROD = productie (rest.afas.online) -->
   <mode>TEST</mode>
+  <!-- Flow-schakelaars (true/false). Ontbrekend => aan.
+       flow1 = AFAS Forecasts -> Salesbuildr Opportunities
+       flow2 = Gesloten Salesbuildr Opportunities -> AFAS Voorcalculatie -->
+  <flows>
+    <flow1>true</flow1>
+    <flow2>true</flow2>
+  </flows>
   <global>
     <NotifySmtpServer>smtp.promax.lan</NotifySmtpServer>
     <NotifyEmail>robert.glintmeijer@promax.nl</NotifyEmail>

@@ -728,7 +728,7 @@ PSA-synced fields are read-only in Salesbuildr. To modify them, update in the PS
 
 ---
 
-## Promax Implementation Notes (Sync-Afas2Salesbuildr-Forecasts.ps1)
+## Promax Implementation Notes (Sync-Forecasts.ps1)
 
 Concrete endpoint usage and field mappings as implemented by the forecast sync script.
 
@@ -791,7 +791,7 @@ Among the returned quotes, the one with `primary: true` is used — **no fallbac
 
 ### Article group (`Grp`) via `configs/mapping-artikelgroepen.xml`
 
-When a missing article is created in AFAS (Flow 2 step 2a), its **artikelgroep** (`FbItemArticle.Grp`) is required and is now resolved in a **direct one hop**, via the repo file `configs/mapping-artikelgroepen.xml`:
+When a missing article is created in AFAS (Flow 2 step 2b), its **artikelgroep** (`FbItemArticle.Grp`) is required and is now resolved in a **direct one hop**, via the repo file `configs/mapping-artikelgroepen.xml`:
 
 ```xml
 <mapping-artikelgroepen>

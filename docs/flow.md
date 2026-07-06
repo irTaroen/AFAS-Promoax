@@ -1,10 +1,11 @@
-# Sync-Afas2Salesbuildr-Forecasts — Execution Flow
+# Sync-Forecasts — Execution Flow
 
 ## Setup & bootstrap (lines 412–458)
 
 - Clear error state (`$Error.Clear()`) and enter the top-level `try`.
 - Load config from `configs/config.xml` into `$config` (:415).
 - Ensure `configs/` dir exists — creates it if missing (:417-419).
+- Parse the flow toggles via `ConvertTo-ConfigBool` (:579-580): `$Flow1Enabled` / `$Flow2Enabled` from `<flows><flow1>/<flow2>>`; missing/empty/unrecognized values default to `$true` (both flows on), so an older config without `<flows>` is unaffected.
 - Read the two watermark state files (:422-428):
   - `configs/LastForecastSyncDate.xml` → `$LastForecastSync` (Flow 1)
   - `configs/LastSyncDate_Opportunities.xml` → `$LastOpportunitySync` (Flow 2)
@@ -17,6 +18,7 @@
 
 ## Flow 1 — AFAS Forecasts → Salesbuildr Opportunities (lines 461–528)
 
+- If `$Flow1Enabled` is `$false` (:624-625), logs `"=== Flow 1 is uitgeschakeld in config.xml (flows/flow1) — overgeslagen ==="` and the whole flow body is skipped.
 - Fetch changed forecasts: `Invoke-AfasGetConnectorFiltered` queries the `Salesbuildr_Forecasts` GetConnector server-side filtered on `gewijzigd > $LastForecastSync` (operator 5 = greater-than), paginating 100 at a time.
 - Set `$Flow1Complete = $true` (:478) — the batch-watermark flag; any skip/error flips it to `$false`.
 - Loop each forecast (:480):
@@ -28,28 +30,34 @@
 
 ## Flow 2 — Closed Opportunities → AFAS Voorcalculatieregels (lines 531–670)
 
+- If `$Flow2Enabled` is `$false` (:720-721), logs `"=== Flow 2 is uitgeschakeld in config.xml (flows/flow2) — overgeslagen ==="` and the whole flow body is skipped.
 - Fetch closed opportunities: `Get-SalesbuildrClosedOpportunities` pages through `statusId:closed` (size/from pagination), then client-side filters `updatedAt > $LastOpportunitySync`.
 - Set `$Flow2Complete = $true` (:543).
 
-### Stap 2a — collect quote lines & create missing articles (:545-604)
+### Stap 2a/2b — categorize Won/Lost, collect quote lines & create missing articles (:545-604)
 
 - For each closed opportunity, fetch its primary quote (`Get-SalesbuildrPrimaryQuote`) — queries `GET /public-api/quote?filters=opportunityId:{id}`, picks `primary: true`, or falls back to the most recent approved quote. On error/missing quote → log, clear flag, skip. Store each quote's items in `$AllQuotationLines` keyed by opportunity id.
 - Collect unique item codes from `product.externalIdentifier` across all lines (:578-580).
 - Fetch existing AFAS articles (`Salesbuildr_Artikelen`) and their itemCodes (:585-586).
 - Create any missing articles in AFAS via `New-AfasArtikel` (`FbItemArticle`), using the quote item's name as description; on error, clear the flag.
 
-### Stap 2b — create voorcalculaties per opportunity (:606-670)
+### Stap 2c — create voorcalculaties per opportunity (:606-670)
 
 - Derive `$ForecastSqNo` from the opportunity's `externalIdentifier` (`afas-Forecast-{SqNo}`) and build `$QuId = "SB-{SqNo}"` (:611-612).
-- Re-fetch the AFAS Forecast by SqNo (`Get-AfasForecastBySqNo`) to get `verkooprelatie` → `$DbId`/`$PrId` (not present on the Opportunity). If not found → log ERROR, clear flag, skip.
-- **Idempotency check** (:625-630): filter `Salesbuildr_Voorcalculatie` on `offerte = QuId`. If it already exists, just close the Forecast and continue.
+- Parse the CmForecast key (`ForecastId`/`SqNo`/`PrId`) straight from the opportunity's `externalIdentifier` via `ConvertFrom-ForecastExternalId` — no re-fetch of the AFAS Forecast. If the identifier doesn't match the expected format → log ERROR, clear flag, skip.
+- **Idempotency check** (:625-630): `Get-AfasVoorcalculatie` filters `Salesbuildr_Voorcalculatie` on `offerte = QuId`. If it already exists, just close the Forecast and continue.
 - Build line items (:634-644) — `ItemCode`/`Omschrijving`/`Aantal`/`Prijs` from each quote item.
 - Create the `KnQuotation` via `New-AfasVoorcalculatie`; on success set `$VoorcalculatieGelukt = $true`.
-- Close the originating Forecast (`Close-AfasForecast`, `ViOp = "G"` = won) — only if the voorcalculatie was created successfully. Errors clear the flag.
+- Close the originating Forecast (`Close-AfasForecast`, `ViOp = "G"` = won) — still deliberately disabled in code pending a later step, so this line does not run yet.
+
+### Stap 2d — close Lost forecasts
+
+- For each Lost opportunity, parse the CmForecast key from its `externalIdentifier` via `ConvertFrom-ForecastExternalId` (same as 2c, no re-fetch) and close it in AFAS via `Close-AfasForecast` with `ViOp = "N"` (no `OrAF`, no articles/voorcalculatie). Errors clear the flag.
 
 ## State update (lines 673–692)
 
-- Advance each watermark independently, but only if its flag is still true:
+- A disabled flow (`$Flow1Enabled` / `$Flow2Enabled` = `$false`) leaves its watermark untouched and logs `"Flow N uitgeschakeld — state ongewijzigd"` — no warning, since nothing was attempted (:962-978).
+- Otherwise, advance each watermark independently, but only if its flag is still true:
   - `$Flow1Complete` → write current date to `configs/LastForecastSyncDate.xml` (:680-685).
   - `$Flow2Complete` → write current date to `configs/LastSyncDate_Opportunities.xml` (:687-692).
 - If a flag is false, the date is held so the next run retries the unprocessed records.
@@ -60,4 +68,4 @@
 
 ## Naming note
 
-- The file is `Sync-Forecasts.ps1` but its header and CLAUDE.md both call it `Sync-Afas2Salesbuildr-Forecasts.ps1` — same script, just renamed on disk.
+- The script was renamed on disk from `Sync-Afas2Salesbuildr-Forecasts.ps1` to `Sync-Forecasts.ps1`; the script header, CLAUDE.md and the API guides now all use the new name.

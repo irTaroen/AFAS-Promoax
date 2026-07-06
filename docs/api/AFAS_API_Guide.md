@@ -1543,7 +1543,7 @@ Content-Type: application/json
 
 ---
 
-## Promax Implementation Notes (Sync-Afas2Salesbuildr-Forecasts.ps1)
+## Promax Implementation Notes (Sync-Forecasts.ps1)
 
 Concrete payloads used by the forecast sync script, as implemented.
 
@@ -1637,7 +1637,7 @@ GET /connectors/Salesbuildr_Artikelen?filterfieldids=itemCode&filtervalues={mpn}
 > - `ItCd` = the Salesbuildr quote line's **`mpn`** (always — the `product` field is nullable). Lines without an `mpn` are skipped.
 > - `AuId` = always `false` (item code is supplied explicitly, no AFAS auto-numbering).
 > - `Ds` = the item `name`, capped at 100 characters (AFAS limit).
-> - `Grp` (artikelgroep, **required**) is now a **direct one-hop** lookup: quote line `category.id` → `configs/mapping-artikelgroepen.xml` (`<categorie SB-id="..." AFAS-id="..." AFAS-naam="..."/>`) → `Grp`. The old two-hop route — `GET /public-api/category` → `costCenterId` → `configs/config.xml`'s `<artikelgroepmapping><costcenter>` — is obsolete; that config block has been removed entirely. A category missing from the mapping file, or mapped with an empty `AFAS-id`, causes the article — and its whole opportunity — to be skipped with a WARNING (watermark held for retry). See `Get-AfasArtikelgroep` / `New-AfasArtikel` and Flow 2 step 2a.
+> - `Grp` (artikelgroep, **required**) is now a **direct one-hop** lookup: quote line `category.id` → `configs/mapping-artikelgroepen.xml` (`<categorie SB-id="..." AFAS-id="..." AFAS-naam="..."/>`) → `Grp`. The old two-hop route — `GET /public-api/category` → `costCenterId` → `configs/config.xml`'s `<artikelgroepmapping><costcenter>` — is obsolete; that config block has been removed entirely. A category missing from the mapping file, or mapped with an empty `AFAS-id`, causes the article — and its whole opportunity — to be skipped with a WARNING (watermark held for retry). See `Get-AfasArtikelgroep` / `New-AfasArtikel` and Flow 2 step 2b.
 > - `BiUn` = `"St"` and `VaRc` = `"2"` — fixed placeholders for now.
 > - The OLD fields `Ds_1043`, `VaTp`, `BiSt`, `CoLa`, `Bl` are no longer sent.
 
