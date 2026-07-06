@@ -309,50 +309,66 @@ function Close-AfasForecast {
 
 function New-AfasVoorcalculatie {
     # Maakt een KnQuotation (voorcalculatie) aan in AFAS, inclusief regels.
-    # QuId = het unieke AFAS forecast-id (bijv. "11310"), tevens idempotentiesleutel
-    #        (offerte in Salesbuildr_Voorcalculatie); prefix evt. later (max 21 chars).
-    # FcNo koppelt de quotatie terug aan de originating Forecast (CmForecast.SqNo = volgnummer).
-    # KnQuotationLine velden: ItCd (itemcode), Qu (aantal), UP (eenheidsprijs).
+    # Kop (KnQuotation.Element):
+    #   @QuId = uniek AFAS forecast-id (Element-attribuut), tevens idempotentiesleutel
+    #           (offerte in Salesbuildr_Voorcalculatie).
+    #   QuDa  = offertedatum (voorlopig huidige datum).
+    #   DbId  = verkooprelatie / debtor code (= AFAS PrId), uit de opp-externalId.
+    #   FcNo  = forecast volgnummer (= CmForecast.SqNo), uit de opp-externalId.
+    # Regel (KnQuotationLine.Element.Fields):
+    #   VaIt = "2" product / "1" dienst (grouping volgt later — nu default "2"),
+    #   ItCd = mpn, QuUn/Qu/QuSa = aantal, Upri = verkoopprijs per stuk,
+    #   AmCo = kostprijs per stuk. Bedragen als string met punt-decimaal (invariant).
     param(
         [string]$Connector,
-        [string]$QuId,        # offerte-nummer = AFAS forecast-id, bijv. "11310"
+        [string]$QuId,        # AFAS forecast-id, bijv. "11310"
         [string]$DbId,        # verkooprelatie / debtor code (= AFAS PrId)
-        [string]$Omschrijving,
         [int]$FcNo,           # forecast volgnummer (CmForecast.SqNo)
-        [array]$Regels        # array van hashtables met ItemCode, Aantal, Prijs
+        [array]$Regels        # array van hashtables: ItemCode, Aantal, Prijs, Kostprijs, [Soort]
     )
 
-    $lines = $Regels | ForEach-Object {
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+
+    $lineElements = @($Regels | ForEach-Object {
         @{
             Fields = @{
+                VaIt = if ($_.Soort) { $_.Soort } else { "2" }   # 2=product, 1=dienst (grouping later)
                 ItCd = $_.ItemCode
-                Qu   = $_.Aantal
-                UP   = $_.Prijs
+                QuUn = ([double]$_.Aantal).ToString($inv)
+                Qu   = ([double]$_.Aantal).ToString($inv)
+                QuSa = ([double]$_.Aantal).ToString($inv)
+                Upri = ([double]$_.Prijs).ToString($inv)
+                AmCo = ([double]$_.Kostprijs).ToString($inv)
             }
         }
-    }
+    })
 
     $body = @{
         KnQuotation = @{
             Element = @{
-                Fields = @{
-                    QuId  = $QuId
-                    DbId  = $DbId
-                    QuDa  = (Get-Date -Format "yyyy-MM-dd")
-                    Ds    = $Omschrijving
-                    CuId  = "EUR"
-                    FcNo  = $FcNo
+                "@QuId" = $QuId
+                Fields  = @{
+                    QuDa = (Get-Date -Format "yyyy-MM-dd")
+                    DbId = $DbId
+                    FcNo = $FcNo
                 }
-                Objects = @{
-                    KnQuotationLine = @{
-                        Element = $lines
+                Objects = @(
+                    @{
+                        KnQuotationLine = @{
+                            Element = $lineElements
+                        }
                     }
-                }
+                )
             }
         }
     }
 
-    Write-Log INFO "Voorcalculatie aanmaken in AFAS: $QuId (Forecast SqNo: $FcNo)"
+    Write-Log INFO "Voorcalculatie aanmaken in AFAS: $QuId (Forecast SqNo: $FcNo, $($Regels.Count) regel(s))"
+
+    # Debug: de exacte JSON-payload die naar AFAS gaat (zelfde -Depth als de verzendcall).
+    Write-Log INFO "POST /connectors/$Connector"
+    Write-Host ($body | ConvertTo-Json -Depth 10)
+
     Invoke-AfasUpdateConnector -Connector $Connector -Body $body
 }
 
@@ -857,87 +873,79 @@ try {
         }
     }
 
-    # # ── Stap 2b: Voorcalculatieregels aanmaken per Won-Opportunity (alleen Won) ──
+    # ── Stap 2b: Voorcalculatie (KnQuotation) aanmaken per Won-Opportunity ──
 
-    # foreach ($Opportunity in $WonOpportunities) {
-    #     $OpportunityId = $Opportunity.id
-    #     # De externalIdentifier codeert alles wat we nodig hebben (Flow 1):
-    #     #   afas-Forecast-{forecast}-{volgnummer}-{verkooprelatie}
-    #     # We parsen die rechtstreeks; een re-fetch van de Forecast is niet meer nodig.
-    #     if ($Opportunity.externalIdentifier -notmatch '^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$') {
-    #         Write-Log ERROR "[$OpportunityId] Onverwacht externalIdentifier-formaat '$($Opportunity.externalIdentifier)' — kan forecast-id/PrId/SqNo niet parsen, overgeslagen"
-    #         $Flow2Complete = $false
-    #         continue
-    #     }
-    #     $QuId = $Matches.fc          # QuId = uniek AFAS forecast-id (bijv. 11310); prefix evt. later
-    #     $SqNo = [int]$Matches.sqno   # CmForecast @SqNo (volgnummer)
-    #     $DbId = $Matches.pr          # CmForecast @PrId (verkooprelatie)
+    foreach ($Opportunity in $WonOpportunities) {
+        $OpportunityId = $Opportunity.id
+        # De externalIdentifier codeert alles wat we nodig hebben (Flow 1):
+        #   afas-Forecast-{forecast}-{volgnummer}-{verkooprelatie}
+        # We parsen die rechtstreeks; een re-fetch van de Forecast is niet meer nodig.
+        if ($Opportunity.externalIdentifier -notmatch '^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$') {
+            Write-Log ERROR "[$OpportunityId] Onverwacht externalIdentifier-formaat '$($Opportunity.externalIdentifier)' — kan forecast-id/PrId/SqNo niet parsen, overgeslagen"
+            $Flow2Complete = $false
+            continue
+        }
+        $QuId = $Matches.fc          # QuId = uniek AFAS forecast-id (bijv. 11310)
+        $SqNo = [int]$Matches.sqno   # forecast volgnummer (FcNo / CmForecast @SqNo)
+        $DbId = $Matches.pr          # verkooprelatie (DbId / CmForecast @PrId)
 
-    #     # Idempotentie: controleer of Voorcalculatie al bestaat in AFAS (filter op offerte = QuId)
-    #     $BestaandeVoorcalc = Get-AfasRecordByExternalId -Connector $ConnVoorcalcGet -ExternalId $QuId
-    #     If ($null -ne $BestaandeVoorcalc) {
-    #         Write-Log INFO "[$OpportunityId] Voorcalculatie al aanwezig in AFAS ($QuId) — alleen Forecast sluiten"
-    #         try { Close-AfasForecast -Connector $ConnForecastUpdate -PrId $DbId -SqNo $SqNo -ViOp "G" -OrAF (Get-SalesbuildrQuoteTotal -Items $AllQuotationLines[$OpportunityId]) } catch { Write-Log ERROR "Fout bij sluiten Forecast: $_"; $Flow2Complete = $false }
-    #         continue
-    #     }
+        # Idempotentie: bestaat de Voorcalculatie al in AFAS? (filter op offerte = QuId).
+        # Zo ja: overslaan (het sluiten van de Forecast volgt in een latere stap).
+        $BestaandeVoorcalc = Get-AfasRecordByExternalId -Connector $ConnVoorcalcGet -ExternalId $QuId
+        if ($null -ne $BestaandeVoorcalc) {
+            Write-Log INFO "[$OpportunityId] Voorcalculatie al aanwezig in AFAS ($QuId) — overgeslagen"
+            continue
+        }
 
-    #     $Lines = $AllQuotationLines[$OpportunityId]
+        $Lines = $AllQuotationLines[$OpportunityId]
 
-    #     # Kon één van de artikels niet aangemaakt worden (cost center niet gemapt),
-    #     # dan slaan we de HELE opportunity over: een voorcalc met een ontbrekende
-    #     # regel zou naar een niet-bestaand artikel wijzen. Watermerk blijft staan,
-    #     # zodat de opportunity opnieuw wordt geprobeerd na het aanvullen van de mapping.
-    #     $OntbrekendeCodes = @($Lines | Where-Object { $FailedItemCodes -contains $_.mpn } |
-    #         ForEach-Object { $_.mpn } | Sort-Object -Unique)
-    #     If ($OntbrekendeCodes.Count -gt 0) {
-    #         Write-Log WARNING "[$OpportunityId] Overgeslagen: artikel(en) $($OntbrekendeCodes -join ', ') niet aangemaakt (cost center niet gemapt)"
-    #         $Flow2Complete = $false
-    #         continue
-    #     }
+        # Kon één van de artikels niet aangemaakt worden (categorie niet gemapt),
+        # dan slaan we de HELE opportunity over: een voorcalc-regel zou anders naar
+        # een niet-bestaand artikel wijzen. Watermerk blijft staan, zodat de
+        # opportunity opnieuw wordt geprobeerd na het aanvullen van de mapping.
+        $OntbrekendeCodes = @($Lines | Where-Object { $FailedItemCodes -contains $_.mpn } |
+            ForEach-Object { $_.mpn } | Sort-Object -Unique)
+        if ($OntbrekendeCodes.Count -gt 0) {
+            Write-Log WARNING "[$OpportunityId] Overgeslagen: artikel(en) $($OntbrekendeCodes -join ', ') niet aangemaakt (categorie niet gemapt)"
+            $Flow2Complete = $false
+            continue
+        }
 
-    #     $Regels = @()
-    #     foreach ($Line in $Lines) {
-    #         # De AFAS itemcode (ItCd) is ALTIJD de mpn. Regels zonder mpn hebben
-    #         # geen artikelkoppeling en worden overgeslagen.
-    #         If ([string]::IsNullOrWhiteSpace($Line.mpn)) {
-    #             Write-Log WARNING "[$OpportunityId] Quote-regel '$($Line.name)' zonder mpn — overgeslagen (geen artikelcode)"
-    #             continue
-    #         }
-    #         $Regels += @{
-    #             # SalesBuildr-zijdige veldnamen bevestigd via QuoteItemResponseDto:
-    #             # 'mpn' = AFAS itemcode (ItCd), 'name', 'quantity', 'price'
-    #             ItemCode     = $Line.mpn
-    #             Omschrijving = $Line.name
-    #             Aantal       = $Line.quantity
-    #             Prijs        = $Line.price
-    #         }
-    #     }
+        $Regels = @()
+        foreach ($Line in $Lines) {
+            # De AFAS itemcode (ItCd) is ALTIJD de mpn. Regels zonder mpn hebben
+            # geen artikelkoppeling en worden overgeslagen.
+            if ([string]::IsNullOrWhiteSpace($Line.mpn)) {
+                Write-Log WARNING "[$OpportunityId] Quote-regel '$($Line.name)' zonder mpn — overgeslagen (geen artikelcode)"
+                continue
+            }
+            $Regels += @{
+                # Bevestigde QuoteItemResponseDto-velden: 'mpn' = ItCd, 'quantity',
+                # 'price' = verkoopprijs p/st (Upri), 'cost' = kostprijs p/st (AmCo).
+                ItemCode  = $Line.mpn
+                Aantal    = $Line.quantity
+                Prijs     = $Line.price
+                Kostprijs = $Line.cost
+            }
+        }
 
-    #     $VoorcalculatieGelukt = $false
-    #     try {
-    #         New-AfasVoorcalculatie `
-    #             -Connector    $ConnVoorcalcUpdate `
-    #             -QuId         $QuId `
-    #             -DbId         $DbId `
-    #             -Omschrijving $Opportunity.name `
-    #             -FcNo         $SqNo `
-    #             -Regels       $Regels
-    #         $VoorcalculatieGelukt = $true
-    #     } catch {
-    #         Write-Log ERROR "[$OpportunityId] Fout bij aanmaken Voorcalculatie: $_"
-    #         $Flow2Complete = $false
-    #     }
+        try {
+            New-AfasVoorcalculatie `
+                -Connector $ConnVoorcalcUpdate `
+                -QuId      $QuId `
+                -DbId      $DbId `
+                -FcNo      $SqNo `
+                -Regels    $Regels
+        } catch {
+            Write-Log ERROR "[$OpportunityId] Fout bij aanmaken Voorcalculatie: $_"
+            $Flow2Complete = $false
+        }
+    }
 
-    #     # Sluit de Forecast in AFAS — alleen als de Voorcalculatie succesvol is aangemaakt
-    #     if ($VoorcalculatieGelukt) {
-    #         try {
-    #             Close-AfasForecast -Connector $ConnForecastUpdate -PrId $DbId -SqNo $SqNo -ViOp "G" -OrAF (Get-SalesbuildrQuoteTotal -Items $AllQuotationLines[$OpportunityId])
-    #         } catch {
-    #             Write-Log ERROR "[$OpportunityId] Fout bij sluiten Forecast [SqNo $SqNo] in AFAS: $_"
-    #             $Flow2Complete = $false
-    #         }
-    #     }
-    # }
+    # # ── Sluiten van de Won-Forecast (ViOp=G) volgt in een latere stap ──
+    # # (Nu bewust uitgeschakeld zodat de voorcalc-creatie los getest kan worden.)
+    # #     Close-AfasForecast -Connector $ConnForecastUpdate -PrId $DbId -SqNo $SqNo `
+    # #         -ViOp "G" -OrAF (Get-SalesbuildrQuoteTotal -Items $AllQuotationLines[$OpportunityId])
 
     # # ── Stap 2c: Lost-Opportunities — alleen de AFAS Forecast op N sluiten ──
     # #
