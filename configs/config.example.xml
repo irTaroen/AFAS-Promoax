@@ -1,0 +1,29 @@
+<configuration>
+  <!-- MODE: TEST = AFAS test-omgeving (resttest.afas.online), PROD = productie (rest.afas.online) -->
+  <mode>TEST</mode>
+  <global>
+    <NotifySmtpServer>smtp.promax.lan</NotifySmtpServer>
+    <NotifyEmail>robert.glintmeijer@promax.nl</NotifyEmail>
+  </global>
+  <afas>
+    <omgeving>53307</omgeving>
+    <!-- AFAS API-token: het volledige <token>…</token> XML (plaintext).
+         De scripts base64-encoderen dit zelf tot de 'AfasToken …' Authorization-header. -->
+    <token><![CDATA[<token><version>1</version><data>{afas_token_data}</data></token>]]></token>
+    <connectors>
+      <forecasts_get>Salesbuildr_Forecasts</forecasts_get>
+      <forecasts_update>CmForecast</forecasts_update>
+      <artikelen_get>Salesbuildr_Artikelen</artikelen_get>
+      <artikelen_update>FbItemArticle</artikelen_update>
+      <voorcalculatie_get>Salesbuildr_Voorcalculatie</voorcalculatie_get>
+      <voorcalculatie_update>KnQuotation</voorcalculatie_update>
+    </connectors>
+  </afas>
+  <salesbuildr>
+    <url>https://verkoop.promax.nl</url>
+    <apikey>{salesbuildr_api_key}</apikey>
+    <countrymapping>
+      <country afas="B" salesbuildr="BE"/>
+    </countrymapping>
+  </salesbuildr>
+</configuration>

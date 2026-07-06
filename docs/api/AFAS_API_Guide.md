@@ -61,7 +61,7 @@ The raw token is an XML string:
 <token><version>1</version><data>{TOKEN_DATA}</data></token>
 ```
 
-This XML string must be **Base64-encoded** before use. Store the raw token in a secure location (e.g. `.env`) and encode it at runtime.
+This XML string must be **Base64-encoded** before use. Store the raw token in a secure location outside version control (e.g. a gitignored `configs/config.xml`) and encode it at runtime.
 
 ### Request Header
 
@@ -360,7 +360,7 @@ This deletes the `KnAppointment` whose `ApId` = `123`. To delete a **nested** ro
 ## Salesbuildr_Organisaties — GetConnector (Read Organisations)
 
 **Connector name:** `Salesbuildr_Organisaties`  
-Read-only connector returning organisation/company records from AFAS. Used by `Sync-Afas2Salesbuildr.ps1` to upsert companies into Salesbuildr. No corresponding UpdateConnector — organisations are written to Salesbuildr, not back to AFAS.
+Read-only connector returning organisation/company records from AFAS, used to upsert companies into Salesbuildr (no dedicated sync script currently). No corresponding UpdateConnector — organisations are written to Salesbuildr, not back to AFAS.
 
 ```http
 GET /connectors/Salesbuildr_Organisaties?skip=0&take=100
@@ -417,7 +417,7 @@ Authorization: AfasToken {base64_encoded_token}
 | `Gewijzigd_op` | datetime | Last modified timestamp | — |
 | `Aangemaakt_op` | datetime | Created timestamp | — |
 
-> **Note:** Promax uses `NL` → `NL` country mapping directly. Exceptions (e.g. `B` → `BE`) are configured in `config.xml` under `<countrymapping>`.
+> **Note:** Promax uses `NL` → `NL` country mapping directly. Exceptions (e.g. `B` → `BE`) are configured in `configs/config.xml` under `<countrymapping>`.
 
 ### Filtering
 
@@ -1637,7 +1637,7 @@ GET /connectors/Salesbuildr_Artikelen?filterfieldids=itemCode&filtervalues={mpn}
 > - `ItCd` = the Salesbuildr quote line's **`mpn`** (always — the `product` field is nullable). Lines without an `mpn` are skipped.
 > - `AuId` = always `false` (item code is supplied explicitly, no AFAS auto-numbering).
 > - `Ds` = the item `name`, capped at 100 characters (AFAS limit).
-> - `Grp` (artikelgroep, **required**) is now a **direct one-hop** lookup: quote line `category.id` → `mapping-artikelgroepen.xml` (`<categorie SB-id="..." AFAS-id="..." AFAS-naam="..."/>`) → `Grp`. The old two-hop route — `GET /public-api/category` → `costCenterId` → `config.xml`'s `<artikelgroepmapping><costcenter>` — is obsolete; that config block is now unused. A category missing from the mapping file, or mapped with an empty `AFAS-id`, causes the article — and its whole opportunity — to be skipped with a WARNING (watermark held for retry). See `Get-AfasArtikelgroep` / `New-AfasArtikel` and Flow 2 step 2a.
+> - `Grp` (artikelgroep, **required**) is now a **direct one-hop** lookup: quote line `category.id` → `configs/mapping-artikelgroepen.xml` (`<categorie SB-id="..." AFAS-id="..." AFAS-naam="..."/>`) → `Grp`. The old two-hop route — `GET /public-api/category` → `costCenterId` → `configs/config.xml`'s `<artikelgroepmapping><costcenter>` — is obsolete; that config block has been removed entirely. A category missing from the mapping file, or mapped with an empty `AFAS-id`, causes the article — and its whole opportunity — to be skipped with a WARNING (watermark held for retry). See `Get-AfasArtikelgroep` / `New-AfasArtikel` and Flow 2 step 2a.
 > - `BiUn` = `"St"` and `VaRc` = `"2"` — fixed placeholders for now.
 > - The OLD fields `Ds_1043`, `VaTp`, `BiSt`, `CoLa`, `Bl` are no longer sent.
 

@@ -1,9 +1,11 @@
-# Local dev credentials — never commit
-.env
+# Credentials (plaintext) — never commit; template: configs/config.example.xml
+configs/config.xml
+
+# Sync-watermark state
+configs/Last*.xml
 
 # Runtime state & logs
-Log/
-work/
+ignore/
 
 # OS cruft
 .DS_Store

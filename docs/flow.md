@@ -3,13 +3,13 @@
 ## Setup & bootstrap (lines 412–458)
 
 - Clear error state (`$Error.Clear()`) and enter the top-level `try`.
-- Load config from `config.xml` into `$config` (:415).
-- Ensure `work/` dir exists — creates it if missing (:417-419).
+- Load config from `configs/config.xml` into `$config` (:415).
+- Ensure `configs/` dir exists — creates it if missing (:417-419).
 - Read the two watermark state files (:422-428):
-  - `LastForecastSyncDate.xml` → `$LastForecastSync` (Flow 1)
-  - `LastSyncDate_Opportunities.xml` → `$LastOpportunitySync` (Flow 2)
+  - `configs/LastForecastSyncDate.xml` → `$LastForecastSync` (Flow 1)
+  - `configs/LastSyncDate_Opportunities.xml` → `$LastOpportunitySync` (Flow 2)
   - Both default to the Unix epoch (1970) on first run, so an initial run pulls everything.
-- Decrypt credentials from the DPAPI-encrypted blobs in config (:434-447) — AFAS token and Salesbuildr API key. (Marked as temporary until `Configuration.psm1` is wired in.)
+- Read credentials straight from the plaintext `configs/config.xml` (:434-447) — AFAS token via `$config.SelectSingleNode('afas/token').InnerText` (works with the CDATA block), Salesbuildr API key via `$config.salesbuildr.apikey`. No decryption, no `Configuration.psm1` — that module has been removed.
 - Connect to both APIs (:449-450):
   - `Connect-Afas` sets global REST URL + `AfasToken` header (base64-encoding the token).
   - `Connect-Salesbuildr` sets the base URI + `api-key` header.
@@ -50,8 +50,8 @@
 ## State update (lines 673–692)
 
 - Advance each watermark independently, but only if its flag is still true:
-  - `$Flow1Complete` → write current date to `LastForecastSyncDate.xml` (:680-685).
-  - `$Flow2Complete` → write current date to `LastSyncDate_Opportunities.xml` (:687-692).
+  - `$Flow1Complete` → write current date to `configs/LastForecastSyncDate.xml` (:680-685).
+  - `$Flow2Complete` → write current date to `configs/LastSyncDate_Opportunities.xml` (:687-692).
 - If a flag is false, the date is held so the next run retries the unprocessed records.
 
 ## Error handling (lines 694–696)

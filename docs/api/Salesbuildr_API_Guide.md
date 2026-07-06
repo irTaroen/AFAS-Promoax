@@ -764,7 +764,7 @@ PUT /public-api/opportunity/ext/{externalIdentifier}
 GET /public-api/opportunity?filters=statusId:closed&size={n}&from={offset}
 ```
 
-Paginated via `size`/`from`. The `filters` parameter is **equality-only** (`field:value`, multiple values OR'd with `|`) — there are **no comparison/range operators**, so the close-date delta cannot be filtered server-side. The delta is therefore applied **client-side** on `closedAt > SinceDate` (not `updatedAt`, which moves on any edit); opportunities without a `closedAt` are skipped. Delta-tracked via the `LastSyncDate_Opportunities.xml` state file (`work/`).
+Paginated via `size`/`from`. The `filters` parameter is **equality-only** (`field:value`, multiple values OR'd with `|`) — there are **no comparison/range operators**, so the close-date delta cannot be filtered server-side. The delta is therefore applied **client-side** on `closedAt > SinceDate` (not `updatedAt`, which moves on any edit); opportunities without a `closedAt` are skipped. Delta-tracked via the `LastSyncDate_Opportunities.xml` state file (`configs/`).
 
 ### Fetch the primary quote for a closed Opportunity
 
@@ -789,9 +789,9 @@ Among the returned quotes, the one with `primary: true` is used — **no fallbac
 
 ⚠️ **Caveat:** `Upri` uses the raw per-unit `price` and does not apply the item `discount`, whereas `CmForecast.OrAF` (see below) *does* apply discount. Known inconsistency, pending confirmation — not yet fixed in code.
 
-### Article group (`Grp`) via `mapping-artikelgroepen.xml`
+### Article group (`Grp`) via `configs/mapping-artikelgroepen.xml`
 
-When a missing article is created in AFAS (Flow 2 step 2a), its **artikelgroep** (`FbItemArticle.Grp`) is required and is now resolved in a **direct one hop**, via the repo file `mapping-artikelgroepen.xml`:
+When a missing article is created in AFAS (Flow 2 step 2a), its **artikelgroep** (`FbItemArticle.Grp`) is required and is now resolved in a **direct one hop**, via the repo file `configs/mapping-artikelgroepen.xml`:
 
 ```xml
 <mapping-artikelgroepen>
@@ -804,7 +804,7 @@ When a missing article is created in AFAS (Flow 2 step 2a), its **artikelgroep**
 - `AFAS-naam` = the artikelgroep description, used only for logging.
 - Only categories with a non-empty `AFAS-id` are loaded into the in-memory map. A category absent from the file, or present with an empty `AFAS-id`, is "not mapped" — the article, and its whole opportunity, are skipped (WARNING, watermark held for retry).
 
-The old two-hop route — quote line `category.id` → `GET /public-api/category` → `costCenterId` → `config.xml`'s `<artikelgroepmapping><costcenter id grp>` — is obsolete; that config block is now unused (`Get-SalesbuildrAllCategories` and the `/public-api/category` fetch were removed).
+The old two-hop route — quote line `category.id` → `GET /public-api/category` → `costCenterId` → `configs/config.xml`'s `<artikelgroepmapping><costcenter id grp>` — is obsolete; that config block has been removed entirely (`Get-SalesbuildrAllCategories` and the `/public-api/category` fetch were removed).
 
 ### Won/Lost categorization
 

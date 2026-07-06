@@ -49,38 +49,6 @@ function Write-Log {
     }
 }
 
-function Import-DotEnv {
-    # Leest een .env-bestand in als hashtable (KEY -> value).
-    # Splitst op het eerste '='; trimt spaties rond sleutel en waarde
-    # (het .env-bestand gebruikt bijv. 'AFAS_Omgeving = 53307'); negeert
-    # lege regels en #-commentaar; strippt omringende quotes.
-    param([string]$Path)
-
-    $vars = @{}
-    if (-not (Test-Path $Path)) { return $vars }
-
-    foreach ($line in Get-Content -Path $Path -Encoding UTF8) {
-        $trimmed = $line.Trim()
-        if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
-
-        $idx = $trimmed.IndexOf('=')
-        if ($idx -lt 1) { continue }
-
-        $key = $trimmed.Substring(0, $idx).Trim()
-        $val = $trimmed.Substring($idx + 1).Trim()
-
-        if ($val.Length -ge 2 -and
-            (($val[0] -eq '"'  -and $val[-1] -eq '"') -or
-             ($val[0] -eq "'"  -and $val[-1] -eq "'"))) {
-            $val = $val.Substring(1, $val.Length - 2)
-        }
-
-        $vars[$key] = $val
-    }
-
-    return $vars
-}
-
 #endregion
 
 #region ── AFAS ──────────────────────────────────────────────────────────────
@@ -578,37 +546,38 @@ function Invoke-SalesbuildrUpsertOpportunity {
 try {
     $Error.Clear()
 
-    $config = (Read-XMLConfig -Path "$PSScriptRoot\config.xml").configuration
-
-    If (-Not (Test-Path "$PSScriptRoot\work")) {
-        New-Item -ItemType Directory -Path "$PSScriptRoot\work" | Out-Null
+    # Config, mapping en sync-datums staan allemaal in configs\
+    If (-Not (Test-Path "$PSScriptRoot\configs")) {
+        New-Item -ItemType Directory -Path "$PSScriptRoot\configs" | Out-Null
     }
 
+    $config = (Read-XMLConfig -Path "$PSScriptRoot\configs\config.xml").configuration
+
     # State files
-    $ForecastStateFile     = "$PSScriptRoot\work\LastForecastSyncDate.xml"
-    $OpportunityStateFile  = "$PSScriptRoot\work\LastSyncDate_Opportunities.xml"
+    $ForecastStateFile     = "$PSScriptRoot\configs\LastForecastSyncDate.xml"
+    $OpportunityStateFile  = "$PSScriptRoot\configs\LastSyncDate_Opportunities.xml"
 
     $Epoch = Get-Date -Date "1-1-1970"
 
     $LastForecastSync    = If (Test-Path $ForecastStateFile)    { Import-Clixml $ForecastStateFile }    Else { $Epoch }
     $LastOpportunitySync = If (Test-Path $OpportunityStateFile) { Import-Clixml $OpportunityStateFile } Else { $Epoch }
 
-    # Credentials & omgeving uit .env (plaintext, lokale dev — niet committen).
-    # De .env levert AFAS-omgeving + token, Salesbuildr API-key en tenant.
-    # Connector-namen en de Salesbuildr-URL blijven uit config.xml komen.
-    $dotenv = Import-DotEnv -Path "$PSScriptRoot\.env"
+    # Credentials, omgeving en MODE komen plaintext uit config.xml.
+    # afas.token is het <token>…</token> XML; Connect-Afas base64-encodeert
+    # die zelf. MODE=TEST schakelt naar resttest.afas.online.
+    # SelectSingleNode + InnerText: werkt zowel met CDATA als met ge-escapete tekst.
+    $Mode              = $config.mode
+    $AfasOmgeving      = $config.afas.omgeving
+    $AfasApiToken      = $config.SelectSingleNode('afas/token').InnerText
+    $SalesbuildrApiKey = $config.salesbuildr.apikey
+    $SalesbuildrUrl    = $config.salesbuildr.url
 
-    # De decoded token (het <token>…</token> XML) is nodig; Connect-Afas
-    # base64-encodeert die zelf. MODE=TEST schakelt naar resttest.afas.online.
-    $Mode              = $dotenv['MODE']
-    $AfasOmgeving      = $dotenv['AFAS_omgeving']
-    $AfasApiToken      = $dotenv['AFAS_token_decoded']
-    $SalesbuildrApiKey = $dotenv['Salesbuilder_API_Key']
-    $SalesbuildrUrl    = $config.salesbuildr.api.url
-
-    foreach ($k in @('AFAS_omgeving','AFAS_token_decoded','Salesbuilder_API_Key')) {
-        if ([string]::IsNullOrWhiteSpace($dotenv[$k])) {
-            throw "Vereiste .env-variabele ontbreekt of is leeg: $k"
+    foreach ($entry in @{ 'afas.omgeving'      = $AfasOmgeving
+                          'afas.token'         = $AfasApiToken
+                          'salesbuildr.apikey' = $SalesbuildrApiKey
+                          'salesbuildr.url'    = $SalesbuildrUrl }.GetEnumerator()) {
+        if ([string]::IsNullOrWhiteSpace($entry.Value)) {
+            throw "Vereiste config.xml-waarde ontbreekt of is leeg: $($entry.Key)"
         }
     }
 
@@ -631,7 +600,7 @@ try {
     # overslaan. Gebruikt in Flow 2 stap 2a bij het aanmaken van ontbrekende artikels.
     $ArtikelgroepMap     = @{}   # SB category.id -> AFAS artikelgroep-code (Grp)
     $ArtikelgroepNaamMap = @{}   # SB category.id -> AFAS artikelgroep-omschrijving (naam, alleen voor logging)
-    $MappingXml = [xml](Get-Content "$PSScriptRoot\mapping-artikelgroepen.xml" -Raw)
+    $MappingXml = [xml](Get-Content "$PSScriptRoot\configs\mapping-artikelgroepen.xml" -Raw)
     foreach ($c in $MappingXml.'mapping-artikelgroepen'.categorie) {
         if ($c.'SB-id' -and -not [string]::IsNullOrWhiteSpace($c.'AFAS-id')) {
             $ArtikelgroepMap[$c.'SB-id']     = $c.'AFAS-id'
