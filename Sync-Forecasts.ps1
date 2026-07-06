@@ -214,9 +214,13 @@ function Invoke-AfasUpdateConnector {
 
 function New-AfasArtikel {
     # Maakt een minimaal Artikel aan in AFAS via UpdateConnector FbItemArticle.
-    # VaTp "0" = standaard artikel, BiSt false = geen voorraad bijhouden.
-    # Grp = artikelgroep (verplicht: elk artikel hoort bij een groep) — bepaald
-    # uit de Salesbuildr-categorie via mapping-artikelgroepen.xml (category.id -> Grp).
+    # Veldwaarden:
+    #   ItCd = itemcode (= quote-regel mpn)
+    #   AuId = altijd $false
+    #   Ds   = omschrijving (naam), afgekapt op 100 tekens
+    #   Grp  = artikelgroep (verplicht) — de AFAS-id uit mapping-artikelgroepen.xml
+    #   BiUn = besteleenheid, voorlopig "St" (stuks)
+    #   VaRc = voorlopig "2"
     param(
         [string]$Connector,
         [string]$ItemCode,
@@ -224,18 +228,19 @@ function New-AfasArtikel {
         [string]$Artikelgroep
     )
 
+    # Ds is in AFAS beperkt tot 100 tekens.
+    if ($Omschrijving.Length -gt 100) { $Omschrijving = $Omschrijving.Substring(0, 100) }
+
     $body = @{
         FbItemArticle = @{
             Element = @{
                 Fields = @{
-                    ItCd    = $ItemCode
-                    Ds      = $Omschrijving
-                    Ds_1043 = $Omschrijving
-                    Grp     = $Artikelgroep
-                    VaTp    = "0"
-                    BiSt    = $false
-                    CoLa    = "NL"
-                    Bl      = $false
+                    ItCd = $ItemCode
+                    AuId = $false
+                    Ds   = $Omschrijving
+                    Grp  = $Artikelgroep
+                    BiUn = "St"
+                    VaRc = "2"
                 }
             }
         }
@@ -743,9 +748,9 @@ try {
     Write-Log INFO "$($ClosedOpportunities.Count) gesloten Opportunities gevonden"
 
     # Print de opgehaalde Opportunities in de terminal (debug / dry-run inspectie)
-    foreach ($Opportunity in $ClosedOpportunities) {
-        $Opportunity | Format-List | Out-String | Write-Host
-    }
+    # foreach ($Opportunity in $ClosedOpportunities) {
+    #     $Opportunity | Format-List | Out-String | Write-Host
+    # }
 
     # Batch-watermark voor Flow 2 (zie toelichting bij Flow 1).
     $Flow2Complete = $true
@@ -792,8 +797,8 @@ try {
             $WonOpportunities += $Opportunity
 
             Write-Log INFO "[$OpportunityId] WON — primaire quote 'approved' ($($Lines.Count) regel(s)); artikels + voorcalc + Forecast sluiten (G)"
-            $Quote | Format-List | Out-String | Write-Host
-            $Lines | Format-List | Out-String | Write-Host
+            # $Quote | Format-List | Out-String | Write-Host
+            # $Lines | Format-List | Out-String | Write-Host
         } else {
             # ── Lost ──
             $Reden = if ($null -eq $Quote) { "geen primaire quote" } else { "primaire quote status = '$($Quote.status)'" }
@@ -934,28 +939,28 @@ try {
     #     }
     # }
 
-    # ── Stap 2c: Lost-Opportunities — alleen de AFAS Forecast op N sluiten ──
-    #
-    # Geen artikels/voorcalc: een Lost-forecast wordt enkel afgesloten. De
-    # CmForecast-sleutel (verkooprelatie/PrId + volgnummer/SqNo) parsen we uit de
-    # externalIdentifier (zelfde formaat als de Won-tak) — geen re-fetch nodig.
-    foreach ($Opportunity in $LostOpportunities) {
-        $OpportunityId = $Opportunity.id
-        if ($Opportunity.externalIdentifier -notmatch '^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$') {
-            Write-Log ERROR "[$OpportunityId] Onverwacht externalIdentifier-formaat '$($Opportunity.externalIdentifier)' — kan PrId/SqNo niet parsen, overgeslagen"
-            $Flow2Complete = $false
-            continue
-        }
-        $SqNo = [int]$Matches.sqno   # CmForecast @SqNo (volgnummer)
-        $DbId = $Matches.pr          # CmForecast @PrId (verkooprelatie)
+    # # ── Stap 2c: Lost-Opportunities — alleen de AFAS Forecast op N sluiten ──
+    # #
+    # # Geen artikels/voorcalc: een Lost-forecast wordt enkel afgesloten. De
+    # # CmForecast-sleutel (verkooprelatie/PrId + volgnummer/SqNo) parsen we uit de
+    # # externalIdentifier (zelfde formaat als de Won-tak) — geen re-fetch nodig.
+    # foreach ($Opportunity in $LostOpportunities) {
+    #     $OpportunityId = $Opportunity.id
+    #     if ($Opportunity.externalIdentifier -notmatch '^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$') {
+    #         Write-Log ERROR "[$OpportunityId] Onverwacht externalIdentifier-formaat '$($Opportunity.externalIdentifier)' — kan PrId/SqNo niet parsen, overgeslagen"
+    #         $Flow2Complete = $false
+    #         continue
+    #     }
+    #     $SqNo = [int]$Matches.sqno   # CmForecast @SqNo (volgnummer)
+    #     $DbId = $Matches.pr          # CmForecast @PrId (verkooprelatie)
 
-        try {
-            Close-AfasForecast -Connector $ConnForecastUpdate -PrId $DbId -SqNo $SqNo -ViOp "N"
-        } catch {
-            Write-Log ERROR "[$OpportunityId] Fout bij sluiten Forecast [SqNo $SqNo] als Lost (N) in AFAS: $_"
-            $Flow2Complete = $false
-        }
-    }
+    #     try {
+    #         Close-AfasForecast -Connector $ConnForecastUpdate -PrId $DbId -SqNo $SqNo -ViOp "N"
+    #     } catch {
+    #         Write-Log ERROR "[$OpportunityId] Fout bij sluiten Forecast [SqNo $SqNo] als Lost (N) in AFAS: $_"
+    #         $Flow2Complete = $false
+    #     }
+    # }
 
 
     ####################################################################
