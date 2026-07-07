@@ -740,11 +740,11 @@ PUT /public-api/opportunity/ext/{externalIdentifier}
 
 `{externalIdentifier}` is built as `afas-Forecast-{forecast}-{volgnummer}-{verkooprelatie}` from the AFAS `Salesbuildr_Forecasts` GetConnector record (e.g. `afas-Forecast-11310-42-10654`). Skipped (not upserted) if the existing Opportunity's `statusId` is already `"closed"`.
 
-> **Three distinct fields — don't conflate them.** `forecast` is a globally-unique AFAS forecast id (e.g. `11310`), used as the `QuId` on the Voorcalculatie — it is **not** the CmForecast key. `volgnummer` is the CmForecast `SqNo` (e.g. `42`). `verkooprelatie` is the AFAS debtor code = CmForecast `PrId` (e.g. `"10654"`), also used as `DbId` on the Voorcalculatie. Encoding all three in the `externalIdentifier` lets Flow 2 parse the CmForecast key straight from the identifier — via regex `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$` — with **no re-fetch** of the Forecast.
+> **Three distinct fields — don't conflate them.** `forecast` is a globally-unique AFAS forecast id (e.g. `11310`), used as the `QuId` on the AFAS quotation (`KnQuotation`, voorcalculatie) — it is **not** the CmForecast key. `volgnummer` is the CmForecast `SqNo` (e.g. `42`). `verkooprelatie` is the AFAS debtor code = CmForecast `PrId` (e.g. `"10654"`), also used as `DbId` on the AFAS quotation. Encoding all three in the `externalIdentifier` lets Flow 2 parse the CmForecast key straight from the identifier — via regex `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$` — with **no re-fetch** of the Forecast.
 
 | AFAS field | Salesbuildr field | Notes |
 |---|---|---|
-| `forecast` | URL `externalIdentifier` (part 1) | Globally-unique AFAS forecast id, e.g. `11310` — also used as the `KnQuotation.QuId` |
+| `forecast` | URL `externalIdentifier` (part 1) | Globally-unique AFAS forecast id, e.g. `11310` — also used as the AFAS quotation's `KnQuotation.QuId` |
 | `volgnummer` | URL `externalIdentifier` (part 2) | CmForecast `SqNo`, e.g. `42` |
 | `verkooprelatie` | URL `externalIdentifier` (part 3) | CmForecast `PrId` (AFAS debtor code), e.g. `"10654"`. **Not** the company key — that's `organisatie`. |
 | `forecastOmschrijving` | `name` | |
@@ -764,7 +764,7 @@ PUT /public-api/opportunity/ext/{externalIdentifier}
 GET /public-api/opportunity?filters=statusId:closed&size={n}&from={offset}
 ```
 
-Paginated via `size`/`from`. The `filters` parameter is **equality-only** (`field:value`, multiple values OR'd with `|`) — there are **no comparison/range operators**, so the close-date delta cannot be filtered server-side. The delta is therefore applied **client-side** on `closedAt > SinceDate` (not `updatedAt`, which moves on any edit); opportunities without a `closedAt` are skipped. Delta-tracked via the `LastSyncDate_Opportunities.xml` state file (`configs/`).
+Paginated via `size`/`from`. The `filters` parameter is **equality-only** (`field:value`, multiple values OR'd with `|`) — there are **no comparison/range operators**, so the close-date delta cannot be filtered server-side. The delta is therefore applied **client-side** on `closedAt > SinceDate` (not `updatedAt`, which moves on any edit); opportunities without a `closedAt` are skipped. Delta-tracked via the `Flow2` node in the `configs/LastSyncDates.xml` state file (shared with Flow 1's `Flow1` node; see `Get-/Set-SyncWatermark` in `Sync-Forecasts.ps1`). The same file's optional `<OverrideDays>N</OverrideDays>` node is a test override that makes both flows sync from N days ago at local midnight for that run (`Get-SyncOverrideDays`); ignored when empty/missing/non-numeric.
 
 ### Fetch the primary quote for a closed Opportunity
 
@@ -785,6 +785,7 @@ Among the returned quotes, the one with `primary: true` is used — **no fallbac
 | `quantity` | `QuUn` / `Qu` / `QuSa` | All three `KnQuotationLine` quantity fields are set to the same value. |
 | `price` | `Upri` | Per-unit sell price. **Not** `unitPrice`; raw `price`, **discount is not applied** (see caveat below). |
 | `cost` | `AmCo` | Per-unit cost price on the `KnQuotationLine`. |
+| — | `UnId` | Not derived from a Salesbuildr field — hardcoded `"St"` (stuks/pieces) on every line. |
 | `category` `{ id, name }` | `Grp` (article group) | See below — set only when the article is **created** (`FbItemArticle`), not on the quote line. |
 
 ⚠️ **Caveat:** `Upri` uses the raw per-unit `price` and does not apply the item `discount`, whereas `CmForecast.OrAF` (see below) *does* apply discount. Known inconsistency, pending confirmation — not yet fixed in code.
@@ -812,8 +813,8 @@ Each closed Opportunity is categorized strictly by its **primary quote** (`prima
 
 | Outcome | Condition | Actions |
 |---|---|---|
-| **Won** (`ViOp = "G"`) | primary quote exists **and** `status == "approved"` | create missing Articles, create Voorcalculatie, close Forecast with `G` + `OrAF` |
-| **Lost** (`ViOp = "N"`) | no primary quote, **or** primary quote `status != "approved"` | close Forecast with `N` only — no Articles, no Voorcalculatie |
+| **Won** (`ViOp = "G"`) | primary quote exists **and** `status == "approved"` | create missing Articles, create the AFAS quotation (`KnQuotation`, voorcalculatie), close Forecast with `G` + `OrAF` |
+| **Lost** (`ViOp = "N"`) | no primary quote, **or** primary quote `status != "approved"` | close Forecast with `N` only — no Articles, no AFAS quotation |
 
 A missing/unapproved primary quote is **not** an error — it's a legitimate Lost outcome and still advances the watermark once the Forecast is closed successfully. Only genuine API/network failures (and unmapped categories, missing Companies, etc.) hold the watermark for retry.
 
@@ -829,11 +830,11 @@ OrAF = Σ (price × quantity × (1 - discount))
 
 ### Close the originating Forecast (`OpportunityResponseDto` → AFAS)
 
-Flow 2 no longer re-fetches the AFAS Forecast — the composite CmForecast key and the Voorcalculatie id are all parsed directly from the Opportunity's `externalIdentifier` via `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$`:
+Flow 2 no longer re-fetches the AFAS Forecast — the composite CmForecast key and the AFAS quotation id are all parsed directly from the Opportunity's `externalIdentifier` via `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$`:
 
 - `SqNo` = `$Matches.sqno` (`volgnummer`)
 - `PrId` = `$Matches.pr` (`verkooprelatie`)
-- `QuId` (Voorcalculatie / idempotency key) = `$Matches.fc` (the AFAS `forecast` id)
+- `QuId` (AFAS quotation / idempotency key) = `$Matches.fc` (the AFAS `forecast` id)
 
 See [AFAS_API_Guide.md](AFAS_API_Guide.md) for the resulting `CmForecast`/`KnQuotation`/`FbItemArticle` payloads.
 

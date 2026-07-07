@@ -1557,7 +1557,7 @@ Note `4` is greater-than; `5` is *less-than*. The datetime value must be local t
 filterfieldids=gewijzigd&filtervalues=2026-01-01T00:00:00&operatortypes=4
 ```
 
-Voorcalculatie idempotency check filters on `offerte` (equals, operator 1):
+AFAS quotation (`KnQuotation`, voorcalculatie — distinct from the Salesbuildr "SB quotation") idempotency check filters on `offerte` (equals, operator 1):
 
 ```
 filterfieldids=offerte&filtervalues=11310&operatortypes=1
@@ -1571,9 +1571,9 @@ Flow 1 sets the Salesbuildr Opportunity's `externalIdentifier` to `afas-Forecast
 
 | Field | Example | Role |
 |---|---|---|
-| `forecast` | `11310` | Globally-unique AFAS forecast id — used as the `KnQuotation.QuId` (voorcalculatie idempotency key). **Not** the CmForecast key. |
+| `forecast` | `11310` | Globally-unique AFAS forecast id — used as the AFAS quotation's `KnQuotation.QuId` (idempotency key). **Not** the CmForecast key. |
 | `volgnummer` | `42` | CmForecast `SqNo` (composite key part) |
-| `verkooprelatie` | `"10654"` | CmForecast `PrId` (composite key part; AFAS debtor code); also used as `KnQuotation.DbId` |
+| `verkooprelatie` | `"10654"` | CmForecast `PrId` (composite key part; AFAS debtor code); also used as the AFAS quotation's `KnQuotation.DbId` |
 
 Flow 2 parses all three back out via regex `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$`.
 
@@ -1596,26 +1596,41 @@ Won (`ViOp: "G"`) example above; Lost is identical except `"ViOp": "N"` and **no
 - `DaSc` is currently the current date (placeholder — revisit later for a real close date).
 - `OrAF` (total quote amount) is included **only** for Won; it's computed client-side from the primary quote's items since `QuoteResponseDto` has no ready-made total: `Σ (price × quantity × (1 - discount))` (`discount` is a decimal fraction; near-zero values like `-1e-6` are rounding noise; `setupPrice` and quote-level discount are ignored).
 
-### Create a Quotation with lines (`KnQuotation`, `POST`)
+### Create an AFAS quotation with lines (`KnQuotation`, `POST`)
+
+Creates the **AFAS quotation** (`KnQuotation`, voorcalculatie — distinct from the Salesbuildr "SB quotation" it originates from), via `New-AfasQuotation`. All SB quote lines for one opportunity go into a **single** payload: `KnQuotationLine.Element` is an array of `{ "Fields": {...} }` objects inside one `Objects` entry, one array item per SB quote line:
 
 ```json
 { "KnQuotation": { "Element": {
     "@QuId": "11310",
     "Fields": { "QuDa": "2026-07-06", "DbId": "10654", "FcNo": 42 },
-    "Objects": [ { "KnQuotationLine": { "Element": [ { "Fields": {
-        "VaIt": "2", "ItCd": "EP2-20095", "QuUn": "1", "Qu": "1", "QuSa": "1",
-        "Upri": "1749.03", "AmCo": "1381.73"
-    } } ] } } ]
+    "Objects": [ { "KnQuotationLine": { "Element": [
+        {
+          "Fields": {
+            "VaIt": "2", "ItCd": "EP2-20095", "UnId": "St",
+            "QuUn": "1", "Qu": "1", "QuSa": "1",
+            "Upri": "1749.03", "AmCo": "1381.73"
+          }
+        },
+        {
+          "Fields": {
+            "VaIt": "2", "ItCd": "EP2-20096", "UnId": "St",
+            "QuUn": "2", "Qu": "2", "QuSa": "2",
+            "Upri": "99.95", "AmCo": "60.00"
+          }
+        }
+    ] } } ]
 }}}
 ```
 
-- `@QuId` = the AFAS `forecast` id (e.g. `"11310"`) — an **Element-level `@`-attribute**, like `CmForecast`'s `@PrId`/`@SqNo`, **not** a `Fields` entry; doubles as the idempotency key (checked via the `Salesbuildr_Voorcalculatie` GetConnector, see filter above). Only created for Won opportunities.
+- `@QuId` = the AFAS `forecast` id (e.g. `"11310"`) — an **Element-level `@`-attribute**, like `CmForecast`'s `@PrId`/`@SqNo`, **not** a `Fields` entry; doubles as the idempotency key (checked via the `Salesbuildr_Voorcalculatie` GetConnector, see filter above; `Get-AfasQuotation`). Only created for Won opportunities.
 - `DbId` (verkooprelatie) and `FcNo` (volgnummer/`SqNo`) are parsed straight from the Opportunity's `externalIdentifier` — no re-fetch of the Forecast.
 - `QuDa` is currently the current date (placeholder — revisit later for a real quote date).
-- `Objects` holds one `KnQuotationLine` with one `Element` per quote line.
-- Line fields: `VaIt` = `"2"` product / `"1"` service — product/service grouping isn't implemented yet, so this is currently hardcoded `"2"` for every line. `ItCd` = the line's `mpn`. `QuUn`/`Qu`/`QuSa` are all set to the line `quantity`. `Upri` = per-unit sell price (`price`), `AmCo` = per-unit cost (`cost`). All amounts are serialized as invariant-culture strings with a **dot** decimal separator (e.g. `"1749.03"`, never `"1749,03"`).
+- `Objects` holds one `KnQuotationLine` with one `Element` array containing one entry per quote line (see example above with two lines).
+- Line fields: `VaIt` = `"2"` product / `"1"` service — product/service grouping isn't implemented yet, so this is currently hardcoded `"2"` for every line. `ItCd` = the line's `mpn`. `UnId` = unit, always `"St"` (stuks/pieces) — set on every line. `QuUn`/`Qu`/`QuSa` are all set to the line `quantity`. `Upri` = per-unit sell price (`price`), `AmCo` = per-unit cost (`cost`). All amounts are serialized as invariant-culture strings with a **dot** decimal separator (e.g. `"1749.03"`, never `"1749,03"`).
 - ⚠️ **Known caveat:** `Upri` uses the raw per-unit `price` and does **not** apply the item `discount` — unlike `CmForecast.OrAF` (see above), which does apply discount. Pending confirmation; not yet fixed in code.
-- The OLD shape — `QuId`/`DbId`/`QuDa`/`Ds`/`CuId`/`FcNo` all inside `Fields`, with line fields `ItCd`/`Qu`/`UP` — is obsolete.
+- The OLD shape — `QuId`/`DbId`/`QuDa`/`Ds`/`CuId`/`FcNo` all inside `Fields`, with line fields `ItCd`/`Qu`/`UP` and no `UnId` — is obsolete.
+- Function names: `New-AfasQuotation` (was `New-AfasVoorcalculatie`) creates the quotation; `Get-AfasQuotation` (was `Get-AfasVoorcalculatie`) does the idempotency lookup.
 
 ### Create a minimal Article (`FbItemArticle`, `POST`)
 

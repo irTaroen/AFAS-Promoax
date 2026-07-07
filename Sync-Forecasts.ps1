@@ -106,6 +106,25 @@ function Get-SyncWatermark {
     return [datetime]::Parse($node.InnerText, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
 }
 
+function Get-SyncOverrideDays {
+    # Leest de test-override <OverrideDays> uit het state-bestand. Een geheel
+    # getal N betekent: beide flows syncen vanaf N dagen geleden (middernacht
+    # lokale tijd). Leeg/ontbrekend/ongeldig -> $null, dan gelden Flow1/Flow2.
+    param(
+        [Parameter(Mandatory)] [string] $Path
+    )
+    if (-not (Test-Path $Path)) { return $null }
+    $xml  = [xml](Get-Content $Path -Raw)
+    $node = $xml.SelectSingleNode('/SyncDates/OverrideDays')
+    if ($null -eq $node -or [string]::IsNullOrWhiteSpace($node.InnerText)) { return $null }
+    $days = 0
+    if (-not [int]::TryParse($node.InnerText.Trim(), [ref]$days)) {
+        Write-Log WARNING "OverrideDays bevat geen geldig getal ('$($node.InnerText)') — override genegeerd"
+        return $null
+    }
+    return $days
+}
+
 function Set-SyncWatermark {
     # Schrijft één sync-watermerk naar het gezamenlijke state-bestand en laat de
     # andere flow-waarde ongemoeid. Datum wordt round-trip ('o') opgeslagen.
@@ -171,10 +190,10 @@ function Invoke-AfasGetConnectorFiltered {
     return $result
 }
 
-function Get-AfasVoorcalculatie {
-    # Controleert of een Voorcalculatie al bestaat in AFAS door te filteren op
-    # offerte (= QuId = AFAS forecast-id). Bevestigd filterveld: 'offerte' in
-    # Salesbuildr_Voorcalculatie (operatortypes=1 = equal).
+function Get-AfasQuotation {
+    # Controleert of een AFAS-quotation (voorcalculatie) al bestaat in AFAS door
+    # te filteren op offerte (= QuId = AFAS forecast-id). Bevestigd filterveld:
+    # 'offerte' in Salesbuildr_Voorcalculatie (operatortypes=1 = equal).
     # Geeft het eerste gevonden record terug, of $null als het niet bestaat.
     param(
         [string]$Connector,
@@ -317,18 +336,22 @@ function Close-AfasForecast {
     Invoke-AfasUpdateConnector -Connector $Connector -Body $body -Method 'Put'
 }
 
-function New-AfasVoorcalculatie {
-    # Maakt een KnQuotation (voorcalculatie) aan in AFAS, inclusief regels.
+function New-AfasQuotation {
+    # Maakt een AFAS-quotation (KnQuotation, de voorcalculatie) aan in AFAS,
+    # inclusief regels — te onderscheiden van de SB-quotation (de Salesbuildr quote).
+    # Meerdere regels gaan als één payload mee: KnQuotationLine.Element is een
+    # ARRAY van { Fields = ... }-objecten binnen één Objects-entry.
     # Kop (KnQuotation.Element):
     #   @QuId = uniek AFAS forecast-id (Element-attribuut), tevens idempotentiesleutel
     #           (offerte in Salesbuildr_Voorcalculatie).
     #   QuDa  = offertedatum (voorlopig huidige datum).
     #   DbId  = verkooprelatie / debtor code (= AFAS PrId), uit de opp-externalId.
     #   FcNo  = forecast volgnummer (= CmForecast.SqNo), uit de opp-externalId.
-    # Regel (KnQuotationLine.Element.Fields):
+    # Regel (KnQuotationLine.Element[].Fields):
     #   VaIt = "2" product / "1" dienst (grouping volgt later — nu default "2"),
-    #   ItCd = mpn, QuUn/Qu/QuSa = aantal, Upri = verkoopprijs per stuk,
-    #   AmCo = kostprijs per stuk. Bedragen als string met punt-decimaal (invariant).
+    #   ItCd = mpn, UnId = eenheid ("St" = stuks), QuUn/Qu/QuSa = aantal,
+    #   Upri = verkoopprijs per stuk, AmCo = kostprijs per stuk.
+    #   Bedragen als string met punt-decimaal (invariant).
     param(
         [string]$Connector,
         [string]$QuId,        # AFAS forecast-id, bijv. "11310"
@@ -344,6 +367,7 @@ function New-AfasVoorcalculatie {
             Fields = @{
                 VaIt = if ($_.Soort) { $_.Soort } else { "2" }   # 2=product, 1=dienst (grouping later)
                 ItCd = $_.ItemCode
+                UnId = "St"                                       # eenheid: stuks
                 QuUn = ([double]$_.Aantal).ToString($inv)
                 Qu   = ([double]$_.Aantal).ToString($inv)
                 QuSa = ([double]$_.Aantal).ToString($inv)
@@ -373,7 +397,7 @@ function New-AfasVoorcalculatie {
         }
     }
 
-    Write-Log INFO "Voorcalculatie aanmaken in AFAS: $QuId (Forecast SqNo: $FcNo, $($Regels.Count) regel(s))"
+    Write-Log INFO "AFAS-quotation aanmaken: $QuId (Forecast SqNo: $FcNo, $($Regels.Count) regel(s))"
     Invoke-AfasUpdateConnector -Connector $Connector -Body $body
 }
 
@@ -596,6 +620,18 @@ try {
 
     $LastForecastSync    = Get-SyncWatermark -Path $SyncStateFile -Name 'Flow1'
     $LastOpportunitySync = Get-SyncWatermark -Path $SyncStateFile -Name 'Flow2'
+
+    # Test-override: <OverrideDays>N</OverrideDays> in het state-bestand laat
+    # beide flows syncen vanaf N dagen geleden (middernacht lokale tijd).
+    # De Flow1/Flow2-watermerken worden aan het eind van de run gewoon
+    # bijgewerkt; Set-SyncWatermark laat de OverrideDays-knoop ongemoeid.
+    $OverrideDays = Get-SyncOverrideDays -Path $SyncStateFile
+    if ($null -ne $OverrideDays) {
+        $OverrideDate        = (Get-Date).Date.AddDays(-$OverrideDays)
+        $LastForecastSync    = $OverrideDate
+        $LastOpportunitySync = $OverrideDate
+        Write-Log WARNING "OverrideDays actief ($OverrideDays): beide flows syncen vanaf $($OverrideDate.ToString('o'))"
+    }
 
     # Credentials, omgeving en MODE komen plaintext uit config.xml.
     # afas.token is het <token>…</token> XML; Connect-Afas base64-encodeert
@@ -883,7 +919,7 @@ try {
             }
         }
 
-        # ── Stap 2c: Voorcalculatie (KnQuotation) aanmaken per Won-Opportunity ──
+        # ── Stap 2c: AFAS-quotation (KnQuotation, voorcalculatie) aanmaken per Won-Opportunity ──
 
         foreach ($Opportunity in $WonOpportunities) {
             $OpportunityId = $Opportunity.id
@@ -897,12 +933,12 @@ try {
                 continue
             }
 
-            # Idempotentie: bestaat de Voorcalculatie al in AFAS? (filter op offerte =
+            # Idempotentie: bestaat de AFAS-quotation al? (filter op offerte =
             # forecast-id). Zo ja: overslaan (het sluiten van de Forecast volgt in een
             # latere stap).
-            $BestaandeVoorcalc = Get-AfasVoorcalculatie -Connector $ConnVoorcalcGet -OfferteNr $ForecastKey.ForecastId
-            if ($null -ne $BestaandeVoorcalc) {
-                Write-Log INFO "[$OpportunityId] Voorcalculatie al aanwezig in AFAS ($($ForecastKey.ForecastId)) — overgeslagen"
+            $BestaandeAfasQuotation = Get-AfasQuotation -Connector $ConnVoorcalcGet -OfferteNr $ForecastKey.ForecastId
+            if ($null -ne $BestaandeAfasQuotation) {
+                Write-Log INFO "[$OpportunityId] AFAS-quotation al aanwezig ($($ForecastKey.ForecastId)) — overgeslagen"
                 continue
             }
 
@@ -939,14 +975,14 @@ try {
             }
 
             try {
-                New-AfasVoorcalculatie `
+                New-AfasQuotation `
                     -Connector $ConnVoorcalcUpdate `
                     -QuId      $ForecastKey.ForecastId `
                     -DbId      $ForecastKey.PrId `
                     -FcNo      $ForecastKey.SqNo `
                     -Regels    $Regels
             } catch {
-                Write-Log ERROR "[$OpportunityId] Fout bij aanmaken Voorcalculatie: $_"
+                Write-Log ERROR "[$OpportunityId] Fout bij aanmaken AFAS-quotation: $_"
                 $Flow2Complete = $false
                 continue
             }
