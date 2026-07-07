@@ -1565,6 +1565,8 @@ filterfieldids=offerte&filtervalues=11310&operatortypes=1
 
 `11310` is the AFAS `forecast` id (see externalIdentifier format below) — **not** `SB-{SqNo}` as in an earlier version.
 
+If a matching `Salesbuildr_Voorcalculatie` record is found (`$QuotationExists = $true`), the script skips only the **creation** call (`New-AfasQuotation`) — it does **not** skip the whole opportunity. The Forecast-close call below still runs for a pre-existing quotation, since it's an idempotent `PUT`; this way a prior run that created the AFAS quotation but failed before closing the Forecast still completes the close on the next run.
+
 ### Opportunity `externalIdentifier` format
 
 Flow 1 sets the Salesbuildr Opportunity's `externalIdentifier` to `afas-Forecast-{forecast}-{volgnummer}-{verkooprelatie}` (e.g. `afas-Forecast-11310-42-10654`), encoding three distinct `Salesbuildr_Forecasts` fields so Flow 2 can parse the CmForecast key directly with **no re-fetch** of the Forecast:
@@ -1579,7 +1581,7 @@ Flow 2 parses all three back out via regex `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d
 
 ### Close a Forecast as won or lost (`CmForecast`, `PUT`)
 
-Triggered when a closed Salesbuildr Opportunity is categorized Won or Lost (strictly by its **primary quote** — see [Salesbuildr_API_Guide.md](Salesbuildr_API_Guide.md#promax-implementation-notes-sync-afas2salesbuildr-forecastsps1)). The composite primary key `PrId` (verkooprelatie) + `SqNo` (volgnummer) is passed as `@`-prefixed **Element-level** attributes, not inside `Fields`:
+Triggered when a closed Salesbuildr Opportunity is categorized Won or Lost (strictly by its **primary quote** — see [Salesbuildr_API_Guide.md](Salesbuildr_API_Guide.md#promax-implementation-notes-sync-forecastsps1)). The composite primary key `PrId` (verkooprelatie) + `SqNo` (volgnummer) is passed as `@`-prefixed **Element-level** attributes, not inside `Fields`:
 
 ```json
 { "CmForecast": { "Element": {
@@ -1592,6 +1594,7 @@ Triggered when a closed Salesbuildr Opportunity is categorized Won or Lost (stri
 Won (`ViOp: "G"`) example above; Lost is identical except `"ViOp": "N"` and **no** `OrAF` field at all.
 
 - `@PrId` / `@SqNo` are parsed straight from the Opportunity's `externalIdentifier` (see format above) — Flow 2 no longer re-fetches the Forecast from AFAS.
+- For Won opportunities, this close call is wrapped in its own `try`/`catch` (separate from the `KnQuotation` creation above): if it fails, the flag is cleared and the opportunity is skipped, but the AFAS quotation created earlier in the same run is **not** rolled back — the next run's idempotency check (see above) picks it up and just retries the close.
 - `ViRe` is always `"00"`.
 - `DaSc` is currently the current date (placeholder — revisit later for a real close date).
 - `OrAF` (total quote amount) is included **only** for Won; it's computed client-side from the primary quote's items since `QuoteResponseDto` has no ready-made total: `Σ (price × quantity × (1 - discount))` (`discount` is a decimal fraction; near-zero values like `-1e-6` are rounding noise; `setupPrice` and quote-level discount are ignored).
@@ -1603,7 +1606,7 @@ Creates the **AFAS quotation** (`KnQuotation`, voorcalculatie — distinct from 
 ```json
 { "KnQuotation": { "Element": {
     "@QuId": "11310",
-    "Fields": { "QuDa": "2026-07-06", "DbId": "10654", "FcNo": 42 },
+    "Fields": { "QuDa": "2026-07-06", "DbId": "10654", "FcNo": 42, "Ds": "Moderne werkplek Noviflora (fase 1)" },
     "Objects": [ { "KnQuotationLine": { "Element": [
         {
           "Fields": {
@@ -1623,8 +1626,9 @@ Creates the **AFAS quotation** (`KnQuotation`, voorcalculatie — distinct from 
 }}}
 ```
 
-- `@QuId` = the AFAS `forecast` id (e.g. `"11310"`) — an **Element-level `@`-attribute**, like `CmForecast`'s `@PrId`/`@SqNo`, **not** a `Fields` entry; doubles as the idempotency key (checked via the `Salesbuildr_Voorcalculatie` GetConnector, see filter above; `Get-AfasQuotation`). Only created for Won opportunities.
+- `@QuId` = the AFAS `forecast` id (e.g. `"11310"`) — an **Element-level `@`-attribute**, like `CmForecast`'s `@PrId`/`@SqNo`, **not** a `Fields` entry; doubles as the idempotency key (checked via the `Salesbuildr_Voorcalculatie` GetConnector, see filter above; `Get-AfasQuotation`). Only created for Won opportunities, and only when it doesn't already exist — see the idempotency note above; the Forecast-close call runs regardless of whether creation happened this run or a prior one.
 - `DbId` (verkooprelatie) and `FcNo` (volgnummer/`SqNo`) are parsed straight from the Opportunity's `externalIdentifier` — no re-fetch of the Forecast.
+- `Ds` (omschrijving) = the SB quote's `title` (`QuoteResponseDto.title`), capped at 100 chars (AFAS limit).
 - `QuDa` is currently the current date (placeholder — revisit later for a real quote date).
 - `Objects` holds one `KnQuotationLine` with one `Element` array containing one entry per quote line (see example above with two lines).
 - Line fields: `VaIt` = `"2"` product / `"1"` service — product/service grouping isn't implemented yet, so this is currently hardcoded `"2"` for every line. `ItCd` = the line's `mpn`. `UnId` = unit, always `"St"` (stuks/pieces) — set on every line. `QuUn`/`Qu`/`QuSa` are all set to the line `quantity`. `Upri` = per-unit sell price (`price`), `AmCo` = per-unit cost (`cost`). All amounts are serialized as invariant-culture strings with a **dot** decimal separator (e.g. `"1749.03"`, never `"1749,03"`).

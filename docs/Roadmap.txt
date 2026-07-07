@@ -7,17 +7,14 @@ Add later
 - Offerte als pdf in dossier van de klant
 - Status Combinaties voor oppurtinities
 
-Questions:
-Forecasts/Oppurtinities
-- SB Oppurtinity Status: Active, Lost, Closed
-- SB Offerte Status: Approved, Declined, Expired, Draft, Waiting for approval
-- Welke velden moeten in de Forecast wanneer die wordt aangemaakt
+Forecasts:
+- 
 
-Artikelen
-- Hoe maken jullie een artikel aan? Welke prijs hangen jullie eraan? Kiezen jullie per voorcalculatieregel een afwijkende kostprijs en verkooprpijs?
+Voorcalculatie
+- pas aanmaken als alle items aanwezig zijn DONE
+- text item voor ontbrekenede Artikelen
+- Werksoort: mpn is leeg en intern productid
 
-Voorcalculatie en Projecten
-- Maken jullie een project aan per voorcalc of per klant? En wordt de voorcalc regel hieraan gekoppeld? Buiten Scope
-- Wordt de voorcalc regel gekoppeld aan de forecast? Ja
-- Voorcalculatie id:
-- Deletion: wat doen we met verwijderde of geanuleerde forecasts?
+AFAS
+- Prodcutieomgeving voorbereiden
+- Dossieritem inrichten

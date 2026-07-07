@@ -749,7 +749,7 @@ PUT /public-api/opportunity/ext/{externalIdentifier}
 | `verkooprelatie` | URL `externalIdentifier` (part 3) | CmForecast `PrId` (AFAS debtor code), e.g. `"10654"`. **Not** the company key — that's `organisatie`. |
 | `forecastOmschrijving` | `name` | |
 | `organisatie` | `companyExtId` | AFAS organisatienummer → `afas-Organisatie-{organisatie}` (matches the org-sync key). Forecast is **skipped + logged** if no such Company exists in Salesbuildr. |
-| `scoringkans` | `probability` | 0–100, no conversion needed |
+| `scoringkans` | `probability` | AFAS is 0–100; SB expects a **0–1 fraction** (`"probability must not be greater than 1"`), so the script sends `scoringkans / 100` |
 | `bedragVerwacht` | `onetimeRevenue` | |
 | `einddatumVerwacht` | `expectedCloseDate` | ISO `yyyy-MM-dd`; only set if not null |
 | `verantwoordelijkeOwnerID` | `ownerId` | **Required** by the upsert (`"Either ownerId or ownerExtId is required"`). The GetConnector resolves the responsible AFAS employee to their internal Salesbuildr **user id** and returns it directly — sent as-is, no ext-id mapping. |
@@ -817,6 +817,8 @@ Each closed Opportunity is categorized strictly by its **primary quote** (`prima
 | **Lost** (`ViOp = "N"`) | no primary quote, **or** primary quote `status != "approved"` | close Forecast with `N` only — no Articles, no AFAS quotation |
 
 A missing/unapproved primary quote is **not** an error — it's a legitimate Lost outcome and still advances the watermark once the Forecast is closed successfully. Only genuine API/network failures (and unmapped categories, missing Companies, etc.) hold the watermark for retry.
+
+> **Won idempotency ordering:** for a Won opportunity, "create the AFAS quotation" and "close the Forecast" are decoupled. If the `KnQuotation` already exists (idempotency check on `offerte`), only its **creation** is skipped — the Forecast is still closed with `G` + `OrAF` (the close is an idempotent `PUT`). This means a prior run that created the quotation but crashed/errored before closing the Forecast will complete the close on the next run, instead of retrying (and failing) the creation forever. The unmapped-category whole-opportunity skip (see [AFAS_API_Guide.md](AFAS_API_Guide.md#promax-implementation-notes-sync-forecastsps1)) only applies when creation is attempted — a quotation that already exists necessarily had its articles created in a prior run.
 
 ### OrAF (total quote amount)
 
