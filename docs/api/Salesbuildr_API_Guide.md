@@ -780,15 +780,34 @@ Among the returned quotes, the one with `primary: true` is used — **no fallbac
 
 | Salesbuildr field (`QuoteItemResponseDto`) | AFAS field | Notes |
 |---|---|---|
-| `mpn` | `ItCd` | Item code — **always** the `mpn`, for both article lookup and creation. `product` is **nullable** (free-form lines have no catalog product) so it is **not** used. Lines without an `mpn` are skipped. |
+| `mpn` (or `product.customFields["AFAS werksoort"]`) | `ItCd` | Item code, resolved per line by `Resolve-AfasLineItem` — see below. |
+| — (derived from the resolution above) | `VaIt` | Line type: `"2"` (artikel) when resolved from `mpn`, `"1"` (werksoort/dienst) when resolved from the werksoort custom field. |
 | `name` | `Ds` (on article create) | Also used as the quote-line label; capped at 100 chars for `FbItemArticle.Ds`. |
 | `quantity` | `QuUn` / `Qu` / `QuSa` | All three `KnQuotationLine` quantity fields are set to the same value. |
 | `price` | `Upri` | Per-unit sell price. **Not** `unitPrice`; raw `price`, **discount is not applied** (see caveat below). |
 | `cost` | `AmCo` | Per-unit cost price on the `KnQuotationLine`. |
-| — | `UnId` | Not derived from a Salesbuildr field — hardcoded `"St"` (stuks/pieces) on every line. |
-| `category` `{ id, name }` | `Grp` (article group) | See below — set only when the article is **created** (`FbItemArticle`), not on the quote line. |
+| — | `UnId` | Not derived from a Salesbuildr field — hardcoded `"St"` (stuks/pieces) on every line, regardless of `VaIt`. |
+| `category` `{ id, name }` | `Grp` (article group) | See below — set only when the article is **created** (`FbItemArticle`), not on the quote line; not applicable to werksoort lines. |
 
 ⚠️ **Caveat:** `Upri` uses the raw per-unit `price` and does not apply the item `discount`, whereas `CmForecast.OrAF` (see below) *does* apply discount. Known inconsistency, pending confirmation — not yet fixed in code.
+
+### Resolving the line item (`ItCd` + `VaIt`) via `Resolve-AfasLineItem`
+
+`QuoteItemResponseDto` (the quote **item**) has **no `customFields` of its own** — custom fields live on the item's nested **`product`** reference (`IdentifiedEntityResponseDto`: `id, name, externalIdentifier, labels, customFields`). `product` is nullable — free-form quote lines with no linked catalog product have none.
+
+Each line is resolved by `Resolve-AfasLineItem`, in order:
+
+1. **`mpn` present** → `ItCd = mpn`, `VaIt = "2"` (artikel). Unchanged from before: used for both the "does the article exist?" lookup (`Salesbuildr_Artikelen.itemCode`) and creation (`FbItemArticle.ItCd`).
+2. **No `mpn`, but the linked product carries a custom field named "AFAS werksoort"** → `ItCd` = that field's value, `VaIt = "1"` (werksoort/dienst). The value **is** the AFAS item code of the werksoort directly (no further mapping). Werksoorten are **never created** — `FbItemArticle` only creates articles — so a werksoort code that doesn't already exist in AFAS (checked via the same per-code `Salesbuildr_Artikelen.itemCode` lookup used for articles) marks that line's item as unavailable.
+3. **Neither `mpn` nor a werksoort custom field** → the line is unmappable (`Resolve-AfasLineItem` returns `$null`).
+
+Reading the custom field (`Get-SalesbuildrProductCustomField`):
+
+- First tries **inline**: `$Line.product.customFields["AFAS werksoort"]`, in case the quote response already embedded it.
+- Falls back to fetching the product via `GET /public-api/product/{id}` (`Get-SalesbuildrProductById`, returns a [`ProductResponseDto`](openapi.json#/components/schemas/ProductResponseDto)) and reading `customFields` there instead — results are cached per product id in `$Global:SbProductCache` so multiple lines referencing the same product cost only one extra API call.
+- Returns `$null` if there is no linked product, or the field is missing/empty on either source.
+
+**Whole-opportunity enforcement:** in Stap 2c, if any line of a Won opportunity is unmappable (case 3 above) or resolves to an item unavailable in AFAS (an article that failed to create, or a werksoort missing from AFAS), the **entire opportunity** is skipped — the AFAS quotation (`KnQuotation`) is not created and the originating Forecast is not closed (stays open), with the watermark held for retry. See [AFAS_API_Guide.md](AFAS_API_Guide.md#promax-implementation-notes-sync-forecastsps1) for the resulting `KnQuotationLine` payload shape.
 
 ### Article group (`Grp`) via `configs/mapping-artikelgroepen.xml`
 
@@ -818,7 +837,7 @@ Each closed Opportunity is categorized strictly by its **primary quote** (`prima
 
 A missing/unapproved primary quote is **not** an error — it's a legitimate Lost outcome and still advances the watermark once the Forecast is closed successfully. Only genuine API/network failures (and unmapped categories, missing Companies, etc.) hold the watermark for retry.
 
-> **Won idempotency ordering:** for a Won opportunity, "create the AFAS quotation" and "close the Forecast" are decoupled. If the `KnQuotation` already exists (idempotency check on `offerte`), only its **creation** is skipped — the Forecast is still closed with `G` + `OrAF` (the close is an idempotent `PUT`). This means a prior run that created the quotation but crashed/errored before closing the Forecast will complete the close on the next run, instead of retrying (and failing) the creation forever. The unmapped-category whole-opportunity skip (see [AFAS_API_Guide.md](AFAS_API_Guide.md#promax-implementation-notes-sync-forecastsps1)) only applies when creation is attempted — a quotation that already exists necessarily had its articles created in a prior run.
+> **Won idempotency ordering:** for a Won opportunity, "create the AFAS quotation" and "close the Forecast" are decoupled. If the `KnQuotation` already exists (idempotency check on `offerte`), only its **creation** is skipped — the Forecast is still closed with `G` + `OrAF` (the close is an idempotent `PUT`). This means a prior run that created the quotation but crashed/errored before closing the Forecast will complete the close on the next run, instead of retrying (and failing) the creation forever. The unmapped-category / unmappable-line whole-opportunity skip (see [AFAS_API_Guide.md](AFAS_API_Guide.md#promax-implementation-notes-sync-forecastsps1) and the [line resolution notes above](#resolving-the-line-item-itcd--vait-via-resolve-afaslineitem)) only applies when creation is attempted — a quotation that already exists necessarily had its articles/werksoorten resolved in a prior run.
 
 ### OrAF (total quote amount)
 

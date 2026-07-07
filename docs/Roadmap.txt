@@ -14,6 +14,7 @@ Voorcalculatie
 - pas aanmaken als alle items aanwezig zijn DONE
 - text item voor ontbrekenede Artikelen
 - Werksoort: mpn is leeg en intern productid
+- Cost center ID mappen aan Cost center naam en AFAS artiekelgroep
 
 AFAS
 - Prodcutieomgeving voorbereiden

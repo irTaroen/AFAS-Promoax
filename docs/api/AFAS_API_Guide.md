@@ -1617,7 +1617,7 @@ Creates the **AFAS quotation** (`KnQuotation`, voorcalculatie — distinct from 
         },
         {
           "Fields": {
-            "VaIt": "2", "ItCd": "EP2-20096", "UnId": "St",
+            "VaIt": "1", "ItCd": "101", "UnId": "St",
             "QuUn": "2", "Qu": "2", "QuSa": "2",
             "Upri": "99.95", "AmCo": "60.00"
           }
@@ -1630,8 +1630,9 @@ Creates the **AFAS quotation** (`KnQuotation`, voorcalculatie — distinct from 
 - `DbId` (verkooprelatie) and `FcNo` (volgnummer/`SqNo`) are parsed straight from the Opportunity's `externalIdentifier` — no re-fetch of the Forecast.
 - `Ds` (omschrijving) = the SB quote's `title` (`QuoteResponseDto.title`), capped at 100 chars (AFAS limit).
 - `QuDa` is currently the current date (placeholder — revisit later for a real quote date).
-- `Objects` holds one `KnQuotationLine` with one `Element` array containing one entry per quote line (see example above with two lines).
-- Line fields: `VaIt` = `"2"` product / `"1"` service — product/service grouping isn't implemented yet, so this is currently hardcoded `"2"` for every line. `ItCd` = the line's `mpn`. `UnId` = unit, always `"St"` (stuks/pieces) — set on every line. `QuUn`/`Qu`/`QuSa` are all set to the line `quantity`. `Upri` = per-unit sell price (`price`), `AmCo` = per-unit cost (`cost`). All amounts are serialized as invariant-culture strings with a **dot** decimal separator (e.g. `"1749.03"`, never `"1749,03"`).
+- `Objects` holds one `KnQuotationLine` with one `Element` array containing one entry per quote line (see example above — one article line, one werksoort line).
+- **Line fields (`ItCd`/`VaIt` resolved per line by `Resolve-AfasLineItem`):** `ItCd = mpn` with `VaIt = "2"` (artikel) when the quote line has an `mpn`; otherwise `ItCd` = the AFAS werksoort code from the SB product custom field **"AFAS werksoort"** with `VaIt = "1"` (werksoort/dienst) — see [Salesbuildr_API_Guide.md](Salesbuildr_API_Guide.md#promax-implementation-notes-sync-forecastsps1) for how the werksoort is looked up. Werksoorten are **referenced only** — they are never created via `FbItemArticle` (that connector creates articles, `VaTp`/`type=2`, only); a werksoort code that doesn't already exist in AFAS (checked via the same `Salesbuildr_Artikelen.itemCode` lookup used for articles) marks that line's item unavailable. A line with neither an `mpn` nor a werksoort is unmappable. `New-AfasQuotation` sets `VaIt` from each Regel's `Soort` field (falls back to `"2"` if absent). `UnId` = unit, always `"St"` (stuks/pieces) — set on every line regardless of `VaIt`. `QuUn`/`Qu`/`QuSa` are all set to the line `quantity`. `Upri` = per-unit sell price (`price`), `AmCo` = per-unit cost (`cost`). All amounts are serialized as invariant-culture strings with a **dot** decimal separator (e.g. `"1749.03"`, never `"1749,03"`).
+- ⚠️ **Whole-opportunity enforcement:** if any line of a Won opportunity is unmappable (no `mpn` and no werksoort) or resolves to an item unavailable in AFAS (article that failed to create, or a werksoort missing from AFAS), the **entire opportunity** is skipped in Stap 2c — the AFAS quotation is not created and the originating Forecast is **not** closed (stays open), with the watermark held for retry. This extends the earlier unmapped-artikelgroep skip (see `Grp` below) to cover unmappable/unavailable lines in general.
 - ⚠️ **Known caveat:** `Upri` uses the raw per-unit `price` and does **not** apply the item `discount` — unlike `CmForecast.OrAF` (see above), which does apply discount. Pending confirmation; not yet fixed in code.
 - The OLD shape — `QuId`/`DbId`/`QuDa`/`Ds`/`CuId`/`FcNo` all inside `Fields`, with line fields `ItCd`/`Qu`/`UP` and no `UnId` — is obsolete.
 - Function names: `New-AfasQuotation` (was `New-AfasVoorcalculatie`) creates the quotation; `Get-AfasQuotation` (was `Get-AfasVoorcalculatie`) does the idempotency lookup.

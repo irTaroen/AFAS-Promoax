@@ -348,8 +348,9 @@ function New-AfasQuotation {
     #   DbId  = verkooprelatie / debtor code (= AFAS PrId), uit de opp-externalId.
     #   FcNo  = forecast volgnummer (= CmForecast.SqNo), uit de opp-externalId.
     # Regel (KnQuotationLine.Element[].Fields):
-    #   VaIt = "2" product / "1" dienst (grouping volgt later — nu default "2"),
-    #   ItCd = mpn, UnId = eenheid ("St" = stuks), QuUn/Qu/QuSa = aantal,
+    #   VaIt = regeltype: "2" artikel / "1" werksoort (per regel gezet via Regel.Soort;
+    #          valt terug op "2" als Soort ontbreekt),
+    #   ItCd = artikelcode (mpn) of werksoort-code, UnId = eenheid ("St" = stuks), QuUn/Qu/QuSa = aantal,
     #   Upri = verkoopprijs per stuk, AmCo = kostprijs per stuk.
     #   Bedragen als string met punt-decimaal (invariant).
     param(
@@ -566,6 +567,83 @@ function Get-SalesbuildrPrimaryQuote {
     # goedgekeurde niet-primaire quote zou een Lost-opportunity ten onrechte als
     # Won classificeren, dus we geven uitsluitend de primary:true quote terug (of $null).
     return $quotes | Where-Object { $_.primary -eq $true } | Select-Object -First 1
+}
+
+function Get-SalesbuildrProductById {
+    # Haalt één product op via GET /public-api/product/{id} (levert een
+    # ProductResponseDto, incl. customFields). Resultaten worden gecachet omdat
+    # meerdere quote-regels naar hetzelfde product kunnen verwijzen. $null als het
+    # product niet gevonden wordt.
+    param([string]$ProductId)
+
+    if (-not $Global:SbProductCache) { $Global:SbProductCache = @{} }
+    if ($Global:SbProductCache.ContainsKey($ProductId)) {
+        return $Global:SbProductCache[$ProductId]
+    }
+
+    try {
+        $Product = Invoke-SalesbuildrRequest `
+            -Uri "$($Global:SalesbuildrUri)/public-api/product/$ProductId"
+    } catch {
+        Write-Log WARNING "Product [$ProductId] kon niet opgehaald worden: $_"
+        $Product = $null
+    }
+
+    $Global:SbProductCache[$ProductId] = $Product
+    return $Product
+}
+
+function Get-SalesbuildrProductCustomField {
+    # Leest een custom field van het aan de regel gekoppelde product. De quote-regel
+    # (QuoteItemResponseDto) heeft ZELF geen customFields; die zitten op het product
+    # (IdentifiedEntityResponseDto.customFields). Eerst inline op $Line.product proberen
+    # (indien de quote-response ze meelevert), anders het product ophalen (gecachet).
+    # $null als er geen gekoppeld product is of het veld ontbreekt/leeg is.
+    param($Line, [string]$FieldName)
+
+    if ($null -eq $Line.product -or [string]::IsNullOrWhiteSpace($Line.product.id)) {
+        return $null
+    }
+
+    # 1) Inline op de regel meegeleverd? (de quote-response levert customFields soms mee)
+    $cf = $Line.product.customFields
+    if ($cf -and ($cf.PSObject.Properties.Name -contains $FieldName)) {
+        $val = $cf.$FieldName
+        if (-not [string]::IsNullOrWhiteSpace([string]$val)) { return ([string]$val).Trim() }
+    }
+
+    # 2) Fallback: pas hier het product ophalen (gecachet) en customFields lezen —
+    #    NIET eerder, zodat een inline-treffer geen extra API-call kost.
+    $Product = Get-SalesbuildrProductById -ProductId $Line.product.id
+    $cf = $Product.customFields
+    if ($cf -and ($cf.PSObject.Properties.Name -contains $FieldName)) {
+        $val = $cf.$FieldName
+        if (-not [string]::IsNullOrWhiteSpace([string]$val)) { return ([string]$val).Trim() }
+    }
+
+    return $null
+}
+
+function Resolve-AfasLineItem {
+    # Bepaalt per SB-quote-regel de AFAS-itemcode (ItCd) én het regeltype (VaIt):
+    #   - mpn aanwezig             -> ItCd = mpn,        VaIt = "2" (artikel)
+    #   - geen mpn, wél werksoort  -> ItCd = werksoort,  VaIt = "1" (werksoort/dienst)
+    #   - geen van beide           -> $null (regel is niet naar AFAS te mappen)
+    # De werksoort komt uit het custom field 'AFAS werksoort' op het gekoppelde product;
+    # die waarde IS de AFAS-itemcode van de werksoort (moet in AFAS bestaan — werksoorten
+    # worden niet aangemaakt via FbItemArticle). Vrije regels zonder product hebben er geen.
+    param($Line)
+
+    if (-not [string]::IsNullOrWhiteSpace($Line.mpn)) {
+        return [pscustomobject]@{ ItemCode = ([string]$Line.mpn).Trim(); VaIt = '2'; Kind = 'artikel' }
+    }
+
+    $Werksoort = Get-SalesbuildrProductCustomField -Line $Line -FieldName 'AFAS werksoort'
+    if (-not [string]::IsNullOrWhiteSpace($Werksoort)) {
+        return [pscustomobject]@{ ItemCode = $Werksoort; VaIt = '1'; Kind = 'werksoort' }
+    }
+
+    return $null
 }
 
 function Get-SalesbuildrQuoteTotal {
@@ -907,25 +985,49 @@ try {
 
         Write-Log INFO "Categorisatie: $($WonOpportunities.Count) Won (G), $($LostOpportunities.Count) Lost (N)"
 
-        # ── Stap 2b: Ontbrekende Artikels in AFAS aanmaken (alleen Won-opportunities) ──
+        # ── Stap 2b: Regels resolven + ontbrekende Artikels aanmaken (alleen Won) ──
 
         # Alle quote-regels over alle Won-quotations, plat geslagen.
         $AllWonLines = @($WonQuoteLines.Values | ForEach-Object { $_ })
 
-        # Unieke artikelcodes. De AFAS itemcode (ItCd) is ALTIJD de 'mpn' van de
-        # quote-regel — het 'product'-veld kan leeg zijn (vrije regel), dus daar mag
-        # niet op vertrouwd worden. Regels zonder mpn hebben geen artikelcode en
-        # worden overgeslagen (niet aan te maken/te koppelen).
-        $AllItemCodes = @($AllWonLines | ForEach-Object { $_.mpn } |
-            Where-Object { $_ } | Sort-Object -Unique)
+        # Resolve elke regel naar een AFAS-itemcode (ItCd) + regeltype (VaIt):
+        #   mpn aanwezig            -> ItCd = mpn,        VaIt = "2" (artikel)   -> aanmaken indien afwezig
+        #   geen mpn, wél werksoort -> ItCd = werksoort,  VaIt = "1" (werksoort) -> NIET aanmaken, moet bestaan
+        #   geen van beide          -> onmapbare regel -> hele opportunity vasthouden (zie 2c)
+        # De resolutie per regel (op quote-item-id) wordt in stap 2c hergebruikt.
+        $LineResolution = @{}
+        foreach ($Line in $AllWonLines) {
+            $LineResolution[$Line.id] = Resolve-AfasLineItem -Line $Line
+        }
 
-        Write-Log INFO "$($AllItemCodes.Count) unieke artikelcodes (mpn) gevonden in de gewonnen quotations"
-
-        # mpn's die niet in AFAS aangemaakt konden worden (ontbrekende artikelgroep-
-        # mapping OF een fout bij het aanmaken) -> in stap 2c wordt de HELE opportunity
-        # overgeslagen (anders wijst de voorcalc-regel naar een niet-bestaand artikel)
-        # en blijft de Forecast open. Zie de skip-logica in stap 2c.
+        # Itemcodes die niet in AFAS beschikbaar zijn (ontbrekende artikelgroep-mapping,
+        # een fout bij aanmaken, of een ontbrekende werksoort) -> in stap 2c wordt de HELE
+        # opportunity overgeslagen (anders wijst de voorcalc-regel naar een niet-bestaand
+        # item) en blijft de Forecast open. Zie de skip-logica in stap 2c.
         $FailedItemCodes = @()
+
+        # Werksoorten (VaIt=1): worden NIET aangemaakt (FbItemArticle maakt alleen
+        # artikelen); ze moeten al in AFAS bestaan. Ontbreekt er één -> markeren als
+        # niet-beschikbaar, zodat de opportunity('s) met die regel worden overgeslagen.
+        $WerksoortCodes = @($LineResolution.Values |
+            Where-Object { $_ -and $_.Kind -eq 'werksoort' } |
+            ForEach-Object { $_.ItemCode } | Sort-Object -Unique)
+        foreach ($Code in $WerksoortCodes) {
+            $BestaatWerksoort = $null -ne (Get-AfasArtikelByItemCode -Connector $ConnArtikelenGet -ItemCode $Code)
+            Write-Log INFO "[Flow 2] Werksoort [$Code] | VaIt=1 (dienst) | bestaat in AFAS: $BestaatWerksoort"
+            if (-not $BestaatWerksoort) {
+                Write-Log WARNING "Werksoort [$Code] bestaat niet in AFAS — wordt NIET aangemaakt (alleen artikelen); opportunity(s) met deze regel worden overgeslagen"
+                $FailedItemCodes += $Code
+                $Flow2Complete = $false
+            }
+        }
+
+        # Artikelen (VaIt=2): de unieke mpn's; aanmaken indien afwezig.
+        $AllItemCodes = @($LineResolution.Values |
+            Where-Object { $_ -and $_.Kind -eq 'artikel' } |
+            ForEach-Object { $_.ItemCode } | Sort-Object -Unique)
+
+        Write-Log INFO "$($AllItemCodes.Count) unieke artikelcode(s) (mpn) en $($WerksoortCodes.Count) werksoort(en) gevonden in de gewonnen quotations"
 
         foreach ($ItemCode in $AllItemCodes) {
             # Bronregel voor de omschrijving (name), de item-ids en de categorie.
@@ -1006,32 +1108,40 @@ try {
                 Write-Log INFO "[$OpportunityId] AFAS-quotation al aanwezig ($($ForecastKey.ForecastId)) — aanmaken overgeslagen, Forecast wordt wel gesloten"
             }
             else {
-                # Kon één van de artikels niet aangemaakt worden (categorie niet gemapt
-                # OF een fout bij het aanmaken), dan slaan we de HELE opportunity over:
-                # een voorcalc-regel zou anders naar een niet-bestaand artikel wijzen. De
-                # AFAS-quotation wordt NIET aangemaakt en de Forecast wordt NIET gesloten
-                # — die blijft open. Watermerk blijft staan, zodat de opportunity opnieuw
-                # wordt geprobeerd zodra het artikel wél aangemaakt kan worden.
-                $OntbrekendeCodes = @($Lines | Where-Object { $FailedItemCodes -contains $_.mpn } |
-                    ForEach-Object { $_.mpn } | Sort-Object -Unique)
-                if ($OntbrekendeCodes.Count -gt 0) {
-                    Write-Log WARNING "[$OpportunityId] Overgeslagen (quotation niet aangemaakt, Forecast blijft open): artikel(en) $($OntbrekendeCodes -join ', ') niet aangemaakt in AFAS"
+                # Elke regel moet naar een AFAS-item te mappen zijn (artikel via mpn, of
+                # werksoort via het custom field) én dat item moet in AFAS beschikbaar zijn.
+                # Zodra één regel onmapbaar is (geen mpn en geen werksoort) of naar een niet-
+                # beschikbaar item verwijst (artikel niet aangemaakt / werksoort ontbreekt),
+                # slaan we de HELE opportunity over: een onvolledige voorcalculatie of een
+                # regel naar een niet-bestaand item mag niet ontstaan. De AFAS-quotation wordt
+                # NIET aangemaakt en de Forecast wordt NIET gesloten — die blijft open. Het
+                # watermerk blijft staan, zodat de opportunity opnieuw wordt geprobeerd.
+                $Probleemregels = @()
+                foreach ($Line in $Lines) {
+                    $Res = $LineResolution[$Line.id]
+                    if ($null -eq $Res) {
+                        $Probleemregels += "regel '$($Line.name)' (geen mpn en geen 'AFAS werksoort')"
+                    }
+                    elseif ($FailedItemCodes -contains $Res.ItemCode) {
+                        $Probleemregels += "$($Res.Kind) '$($Res.ItemCode)' (niet beschikbaar in AFAS)"
+                    }
+                }
+                if ($Probleemregels.Count -gt 0) {
+                    Write-Log WARNING "[$OpportunityId] Overgeslagen (quotation niet aangemaakt, Forecast blijft open): $($Probleemregels -join '; ')"
                     $Flow2Complete = $false
                     continue
                 }
 
                 $Regels = @()
                 foreach ($Line in $Lines) {
-                    # De AFAS itemcode (ItCd) is ALTIJD de mpn. Regels zonder mpn hebben
-                    # geen artikelkoppeling en worden overgeslagen.
-                    if ([string]::IsNullOrWhiteSpace($Line.mpn)) {
-                        Write-Log WARNING "[$OpportunityId] Quote-regel '$($Line.name)' zonder mpn — overgeslagen (geen artikelcode)"
-                        continue
-                    }
+                    # Resolutie uit stap 2b: ItCd = mpn (artikel, VaIt=2) of werksoort-code
+                    # (dienst, VaIt=1). Hierboven is al gegarandeerd dat $Res niet $null is.
+                    $Res = $LineResolution[$Line.id]
                     $Regels += @{
-                        # Bevestigde QuoteItemResponseDto-velden: 'mpn' = ItCd, 'quantity',
-                        # 'price' = verkoopprijs p/st (Upri), 'cost' = kostprijs p/st (AmCo).
-                        ItemCode  = $Line.mpn
+                        # QuoteItemResponseDto: 'quantity', 'price' = verkoopprijs p/st (Upri),
+                        # 'cost' = kostprijs p/st (AmCo). ItemCode/Soort komen uit de resolutie.
+                        ItemCode  = $Res.ItemCode
+                        Soort     = $Res.VaIt
                         Aantal    = $Line.quantity
                         Prijs     = $Line.price
                         Kostprijs = $Line.cost
