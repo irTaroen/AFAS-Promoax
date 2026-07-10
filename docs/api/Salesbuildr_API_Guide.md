@@ -780,14 +780,14 @@ Among the returned quotes, the one with `primary: true` is used — **no fallbac
 
 | Salesbuildr field (`QuoteItemResponseDto`) | AFAS field | Notes |
 |---|---|---|
-| `mpn` (or `product.customFields["AFAS werksoort"]`) | `ItCd` | Item code, resolved per line by `Resolve-AfasLineItem` — see below. |
-| — (derived from the resolution above) | `VaIt` | Line type: `"2"` (artikel) when resolved from `mpn`, `"1"` (werksoort/dienst) when resolved from the werksoort custom field. |
-| `name` | `Ds` (on article create) | Also used as the quote-line label; capped at 100 chars for `FbItemArticle.Ds`. |
-| `quantity` | `QuUn` / `Qu` / `QuSa` | All three `KnQuotationLine` quantity fields are set to the same value. |
-| `price` | `Upri` | Per-unit sell price. **Not** `unitPrice`; raw `price`, **discount is not applied** (see caveat below). |
-| `cost` | `AmCo` | Per-unit cost price on the `KnQuotationLine`. |
-| — | `UnId` | Not derived from a Salesbuildr field — hardcoded `"St"` (stuks/pieces) on every line, regardless of `VaIt`. |
-| `category` `{ id, name }` | `Grp` (article group) | See below — set only when the article is **created** (`FbItemArticle`), not on the quote line; not applicable to werksoort lines. |
+| `mpn` (artikel) / `internalProductId` via `Get-SalesbuildrProductInternalId` (Diensten) | `ItCd` | Item code, resolved per line by `Resolve-AfasLineItem` — see below. The old "AFAS werksoort" product custom field is **no longer read**. |
+| — (derived from the resolution above) | `VaIt` | Line type: `"2"` (artikel) when resolved from `mpn`; `"1"` (werksoort) when a Diensten line's `internalProductId` already exists in AFAS; `"3"` (tekstregel/TXT) when a Diensten line's `internalProductId` is blank or not found in AFAS. |
+| `name` | `Ds` (on article create) **or** a TXT line's `Ds` | Article create: capped at 100 chars for `FbItemArticle.Ds`. TXT line: composed into the info string `"{name} - aantal {qty}, prijs {price}, kostprijs {cost}"`, capped at 255 chars. |
+| `quantity` | `QuUn` / `Qu` / `QuSa` | Set to the same value on artikel/werksoort lines; all three are **empty strings** on a TXT line (no quantity). |
+| `price` | `Upri` | Per-unit sell price on artikel/werksoort lines. **Not** `unitPrice`; raw `price`, **discount is not applied** (see caveat below). **Empty string** on a TXT line. |
+| `cost` | `AmCo` | Per-unit cost price on an artikel line. **Always `"0"`** on a werksoort line — Diensten lines never carry a real cost into AFAS. **Empty string** on a TXT line. |
+| — | `UnId` | Not derived from a Salesbuildr field. `"St"` (stuks/pieces) on artikel lines; **empty string `""`** on werksoort and TXT lines. |
+| `category` `{ id, name }` | `Grp` (article group) | See below — resolved via the line's **main category**, not the leaf `category.id` directly; set only when the article is **created** (`FbItemArticle`), not on the quote line; not applicable to werksoort/TXT lines. |
 
 ⚠️ **Caveat:** `Upri` uses the raw per-unit `price` and does not apply the item `discount`, whereas `CmForecast.OrAF` (see below) *does* apply discount. Known inconsistency, pending confirmation — not yet fixed in code.
 
@@ -795,36 +795,51 @@ Among the returned quotes, the one with `primary: true` is used — **no fallbac
 
 `QuoteItemResponseDto` (the quote **item**) has **no `customFields` of its own** — custom fields live on the item's nested **`product`** reference (`IdentifiedEntityResponseDto`: `id, name, externalIdentifier, labels, customFields`). `product` is nullable — free-form quote lines with no linked catalog product have none.
 
-Each line is resolved by `Resolve-AfasLineItem`, in order:
+Each line is resolved by `Resolve-AfasLineItem -Line -CategoryParentMap -DienstenMainCategoryId`, in order:
 
-1. **`mpn` present** → `ItCd = mpn`, `VaIt = "2"` (artikel). Unchanged from before: used for both the "does the article exist?" lookup (`Salesbuildr_Artikelen.itemCode`) and creation (`FbItemArticle.ItCd`).
-2. **No `mpn`, but the linked product carries a custom field named "AFAS werksoort"** → `ItCd` = that field's value, `VaIt = "1"` (werksoort/dienst). The value **is** the AFAS item code of the werksoort directly (no further mapping). Werksoorten are **never created** — `FbItemArticle` only creates articles — so a werksoort code that doesn't already exist in AFAS (checked via the same per-code `Salesbuildr_Artikelen.itemCode` lookup used for articles) marks that line's item as unavailable.
-3. **Neither `mpn` nor a werksoort custom field** → the line is unmappable (`Resolve-AfasLineItem` returns `$null`).
+1. **`mpn` present** → `ItemCode = mpn`, `VaIt = "2"` (artikel). Unchanged from before: used for both the "does the article exist?" lookup (`Salesbuildr_Artikelen.itemCode`) and creation (`FbItemArticle.ItCd`).
+2. **No `mpn`, but the line's main category is "Diensten"** — resolved the same way as the artikelgroep main category below (`Get-SalesbuildrMainCategoryId` walks the leaf `category.id` up to its root, using the parent map built at startup) and compared against `configs/config.xml`'s `<salesbuildr><diensten_maincategory_id>` (SB main-category id `UyOpp42UPGy3LKgSOQGX` by default; also added to `configs/config.example.xml`) → `Kind = 'diensten'`, `ItemCode` = the line's **`internalProductId`** (or `''` if the product has none).
+3. **Neither `mpn` nor Diensten** → the line is unmappable (`Resolve-AfasLineItem` returns `$null`).
 
-Reading the custom field (`Get-SalesbuildrProductCustomField`):
+The **old "AFAS werksoort" product custom-field branch is removed entirely.** A werksoort must now live under the Diensten main category, and its AFAS item code comes from the product's `internalProductId`, not a custom field.
 
-- First tries **inline**: `$Line.product.customFields["AFAS werksoort"]`, in case the quote response already embedded it.
-- Falls back to fetching the product via `GET /public-api/product/{id}` (`Get-SalesbuildrProductById`, returns a [`ProductResponseDto`](openapi.json#/components/schemas/ProductResponseDto)) and reading `customFields` there instead — results are cached per product id in `$Global:SbProductCache` so multiple lines referencing the same product cost only one extra API call.
-- Returns `$null` if there is no linked product, or the field is missing/empty on either source.
+Reading the `internalProductId` (`Get-SalesbuildrProductInternalId`):
 
-**Whole-opportunity enforcement:** in Stap 2c, if any line of a Won opportunity is unmappable (case 3 above) or resolves to an item unavailable in AFAS (an article that failed to create, or a werksoort missing from AFAS), the **entire opportunity** is skipped — the AFAS quotation (`KnQuotation`) is not created and the originating Forecast is not closed (stays open), with the watermark held for retry. See [AFAS_API_Guide.md](AFAS_API_Guide.md#promax-implementation-notes-sync-forecastsps1) for the resulting `KnQuotationLine` payload shape.
+- The inline quote-line `product` reference (`IdentifiedEntityResponseDto`: `id, name, externalIdentifier, labels, customFields`) does **not** carry `internalProductId` — it simply isn't one of that DTO's fields, unlike the werksoort custom field before it.
+- The helper therefore **always** fetches the full product via `GET /public-api/product/{id}` (`Get-SalesbuildrProductById`, returns a [`ProductResponseDto`](openapi.json#/components/schemas/ProductResponseDto)) — cached per product id in `$Global:SbProductCache` so multiple lines referencing the same product cost only one extra API call.
+- Returns the trimmed `internalProductId` string, or `$null` if there is no linked product or the field is empty.
+
+**Diensten existence check** (Stap 2b): for each unique non-blank Diensten `internalProductId`, the script checks AFAS the same way as for articles — a per-code filtered `Salesbuildr_Artikelen.itemCode` lookup (`Get-AfasArtikelByItemCode`) — result stored in `$DienstenExists`. Diensten codes are **never** added to `$FailedItemCodes` and **never created** via `FbItemArticle` (that connector only creates articles).
+
+**Line building** (Stap 2c / `New-AfasQuotation`): a Diensten line becomes one of two `KnQuotationLine` shapes, based on the existence check:
+
+- **exists in AFAS → werksoort line**, `VaIt = "1"`: `ItCd = internalProductId`, `UnId = ""` (no unit), `QuUn`/`Qu`/`QuSa` = quantity, `Upri` = price, and `AmCo = "0"` **always** (werksoorten always have cost price 0).
+- **not found, or blank `internalProductId` → TXT line**, `VaIt = "3"`: `ItCd = "SBO"` (fixed AFAS text-item code for Salesbuildr text lines), `Ds` = the composed info string `"{name} - aantal {qty}, prijs {price}, kostprijs {cost}"` capped at **255 chars**, and `UnId`/`QuUn`/`Qu`/`QuSa`/`Upri`/`AmCo` all **empty strings** (a text line carries no quantities or amounts).
+
+Article lines are unaffected by any of this — they stay `VaIt = "2"` with `UnId = "St"` and `AmCo = cost`.
+
+**Whole-opportunity enforcement:** in Stap 2c, if any line of a Won opportunity is unmappable (case 3 above) or resolves to an **article** unavailable in AFAS (failed to create), the **entire opportunity** is skipped — the AFAS quotation (`KnQuotation`) is not created and the originating Forecast is not closed (stays open), with the watermark held for retry. **Diensten lines never trigger this skip** — regardless of whether their `internalProductId` exists in AFAS, they always resolve to a werksoort or TXT line. See [AFAS_API_Guide.md](AFAS_API_Guide.md#promax-implementation-notes-sync-forecastsps1) for the resulting `KnQuotationLine` payload shapes.
 
 ### Article group (`Grp`) via `configs/mapping-artikelgroepen.xml`
 
-When a missing article is created in AFAS (Flow 2 step 2b), its **artikelgroep** (`FbItemArticle.Grp`) is required and is now resolved in a **direct one hop**, via the repo file `configs/mapping-artikelgroepen.xml`:
+When a missing article is created in AFAS (Flow 2 step 2b), its **artikelgroep** (`FbItemArticle.Grp`) is required and is resolved in a **two-hop main-category lookup**: the line's leaf `category.id` is walked up to its main (root) category, and that main-category id is then looked up in the repo file `configs/mapping-artikelgroepen.xml`.
+
+**Hop 1 — leaf category → main category.** At the **start of the run**, `Get-SalesbuildrCategoryParentMap` fetches all categories via `GET /public-api/category` (flat list, [`CategoryResponseDto[]`](openapi.json#/components/schemas/CategoryResponseDto)) and builds an in-memory map `category.id -> parentCategoryId` (empty `parentCategoryId` = root). For each quote line, `Get-SalesbuildrMainCategoryId -CategoryId -ParentMap` walks the line's `category.id` (`QuoteItemResponseDto.category.id`) up this parent chain to the topmost/root category id (cycle-protected; returns `$null` if the category id is unknown to the map).
+
+**Hop 2 — main category → `Grp`.** The resulting main-category id is looked up in `configs/mapping-artikelgroepen.xml`:
 
 ```xml
 <mapping-artikelgroepen>
-  <categorie SB-id="..." SB-naam="..." AFAS-id="70" AFAS-naam="Hardware"/>
+  <categorie SB-maincat-id="..." SB-naam="..." AFAS-id="70" AFAS-naam="Hardware"/>
 </mapping-artikelgroepen>
 ```
 
-- `SB-id` = the quote line's `category.id` directly (`QuoteItemResponseDto.category.id`) — no `GET /public-api/category` fetch needed.
+- `SB-maincat-id` = the SB **main (root) category** id — the result of hop 1, not the quote line's leaf `category.id`.
 - `AFAS-id` = the AFAS artikelgroep code (`Grp`).
 - `AFAS-naam` = the artikelgroep description, used only for logging.
-- Only categories with a non-empty `AFAS-id` are loaded into the in-memory map. A category absent from the file, or present with an empty `AFAS-id`, is "not mapped" — the article, and its whole opportunity, are skipped (WARNING, watermark held for retry).
+- Only categories with a non-empty `AFAS-id` are loaded into the in-memory map. A main category absent from the file, or present with an empty `AFAS-id` — or a leaf category that cannot be resolved to a main category at all — is "not mapped" — the article, and its whole opportunity, are skipped (WARNING, watermark held for retry).
 
-The old two-hop route — quote line `category.id` → `GET /public-api/category` → `costCenterId` → `configs/config.xml`'s `<artikelgroepmapping><costcenter id grp>` — is obsolete; that config block has been removed entirely (`Get-SalesbuildrAllCategories` and the `/public-api/category` fetch were removed).
+`GET /public-api/category` is fetched once per run (not obsolete/removed — it is back, needed to resolve main categories); `configs/config.xml`'s old `<afas><artikelgroepmapping><costcenter id grp>` block remains removed (superseded by `configs/mapping-artikelgroepen.xml`). See `Get-SalesbuildrCategoryParentMap`, `Get-SalesbuildrMainCategoryId`, `Get-AfasArtikelgroep` (now takes `-CategoryParentMap`).
 
 ### Won/Lost categorization
 

@@ -1,6 +1,3 @@
-# Credentials (plaintext) — never commit; template: configs/config.example.xml
-configs/config.xml
-
 # Sync-watermark state
 configs/Last*.xml
 

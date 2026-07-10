@@ -279,19 +279,52 @@ function New-AfasArtikel {
     Invoke-AfasUpdateConnector -Connector $Connector -Body $body
 }
 
-function Get-AfasArtikelgroep {
-    # Vertaalt een Salesbuildr-productcategorie naar een AFAS artikelgroep (Grp) via
-    # de directe mapping category.id -> Grp (uit mapping-artikelgroepen.xml). De
-    # quote-regel draagt zelf category.id, dus geen cost-center-omweg meer nodig.
-    # Geeft $null als de categorie ontbreekt of (nog) niet gemapt is — de aanroeper
-    # slaat het artikel dan over met een WARNING (zie Flow 2 stap 2b).
+function Get-SalesbuildrMainCategoryId {
+    # Herleidt een SB-(sub)categorie naar zijn HOOFDcategorie (de wortel: de categorie
+    # zonder — of met onbekende — parent), door via parentCategoryId omhoog te lopen.
+    # Alleen hoofdcategorieën worden op AFAS gemapt (mapping-artikelgroepen.xml), dus
+    # een quote-regel-categorie moet eerst naar zijn hoofdcategorie herleid worden.
+    # $ParentMap = category.id -> parentCategoryId (leeg = wortel), opgebouwd door
+    # Get-SalesbuildrCategoryParentMap. Geeft $null als de categorie onbekend is.
     param(
-        $Category,                    # SB category-object ({ id, name, ... }) of $null
-        [hashtable]$ArtikelgroepMap   # category.id -> Grp
+        [string]$CategoryId,
+        [hashtable]$ParentMap
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CategoryId) -or -not $ParentMap.ContainsKey($CategoryId)) {
+        return $null
+    }
+
+    $current = $CategoryId
+    $seen    = @{}
+    while (-not $seen.ContainsKey($current)) {
+        $seen[$current] = $true
+        $parent = $ParentMap[$current]
+        # Geen (bekende) parent meer -> $current is de hoofdcategorie.
+        if ([string]::IsNullOrWhiteSpace($parent) -or -not $ParentMap.ContainsKey($parent)) {
+            return $current
+        }
+        $current = $parent
+    }
+    return $current   # cyclusbescherming: hoogst bereikte categorie
+}
+
+function Get-AfasArtikelgroep {
+    # Vertaalt een Salesbuildr-productcategorie naar een AFAS artikelgroep (Grp). De
+    # mapping (mapping-artikelgroepen.xml) is op HOOFDcategorie gemaakt, dus de
+    # regel-categorie wordt eerst via de SB-categorieboom naar zijn hoofdcategorie
+    # herleid ($CategoryParentMap) en die hoofdcategorie-id in $ArtikelgroepMap opgezocht.
+    # Geeft $null als de categorie ontbreekt, niet naar een hoofdcategorie te herleiden
+    # is, of (nog) niet gemapt is — de aanroeper slaat het artikel dan over (Flow 2 stap 2b).
+    param(
+        $Category,                       # SB category-object ({ id, name, ... }) of $null
+        [hashtable]$ArtikelgroepMap,     # hoofdcategorie.id -> Grp
+        [hashtable]$CategoryParentMap    # category.id -> parentCategoryId
     )
 
     if ($null -eq $Category -or [string]::IsNullOrWhiteSpace($Category.id)) { return $null }
-    if ($ArtikelgroepMap.ContainsKey($Category.id)) { return $ArtikelgroepMap[$Category.id] }
+    $mainCatId = Get-SalesbuildrMainCategoryId -CategoryId $Category.id -ParentMap $CategoryParentMap
+    if ($mainCatId -and $ArtikelgroepMap.ContainsKey($mainCatId)) { return $ArtikelgroepMap[$mainCatId] }
     return $null
 }
 
@@ -347,19 +380,26 @@ function New-AfasQuotation {
     #   QuDa  = offertedatum (voorlopig huidige datum).
     #   DbId  = verkooprelatie / debtor code (= AFAS PrId), uit de opp-externalId.
     #   FcNo  = forecast volgnummer (= CmForecast.SqNo), uit de opp-externalId.
-    # Regel (KnQuotationLine.Element[].Fields):
-    #   VaIt = regeltype: "2" artikel / "1" werksoort (per regel gezet via Regel.Soort;
-    #          valt terug op "2" als Soort ontbreekt),
-    #   ItCd = artikelcode (mpn) of werksoort-code, UnId = eenheid ("St" = stuks), QuUn/Qu/QuSa = aantal,
-    #   Upri = verkoopprijs per stuk, AmCo = kostprijs per stuk.
-    #   Bedragen als string met punt-decimaal (invariant).
+    # Regel (KnQuotationLine.Element[].Fields) — drie regeltypes via VaIt:
+    #   VaIt="2" ARTIKEL   : ItCd = mpn, UnId = "St", QuUn/Qu/QuSa = aantal,
+    #                        Upri = verkoopprijs p/st, AmCo = kostprijs p/st.
+    #   VaIt="1" WERKSOORT : ItCd = werksoort-code (Diensten-internalProductId dat in AFAS
+    #                        bestaat), UnId = "" (geen eenheid), QuUn/Qu/QuSa = aantal,
+    #                        Upri = verkoopprijs, AmCo = "0" (werksoorten hebben ALTIJD kostprijs 0).
+    #   VaIt="3" TXT       : Diensten-item dat NIET in AFAS bestaat -> tekstregel. ItCd = "SBO"
+    #                        (vaste AFAS text-item-code voor Salesbuildr-tekstregels), Ds = SB-info
+    #                        (omschrijving + aantal + prijs + kostprijs, max 255 tekens), en
+    #                        UnId/QuUn/Qu/QuSa/Upri/AmCo alle leeg — een tekstregel voert geen
+    #                        aantallen of bedragen.
+    # Het regeltype komt per regel uit Regel.Kind ('txt') of Regel.Soort ("1"/"2", val terug op "2").
+    # Bedragen als string met punt-decimaal (invariant).
     param(
         [string]$Connector,
         [string]$QuId,        # AFAS forecast-id, bijv. "11310"
         [string]$DbId,        # verkooprelatie / debtor code (= AFAS PrId)
         [int]$FcNo,           # forecast volgnummer (CmForecast.SqNo)
         [string]$Ds,          # omschrijving (= SB-quote title), afgekapt op 100 tekens
-        [array]$Regels        # array van hashtables: ItemCode, Aantal, Prijs, Kostprijs, [Soort]
+        [array]$Regels        # array van hashtables: ItemCode, Aantal, Prijs, Kostprijs, [Soort] of { Kind='txt', Tekst, Aantal, Prijs, Kostprijs }
     )
 
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
@@ -368,16 +408,44 @@ function New-AfasQuotation {
     if ($Ds -and $Ds.Length -gt 100) { $Ds = $Ds.Substring(0, 100) }
 
     $lineElements = @($Regels | ForEach-Object {
-        @{
-            Fields = @{
-                VaIt = if ($_.Soort) { $_.Soort } else { "2" }   # 2=product, 1=dienst (grouping later)
-                ItCd = $_.ItemCode
-                UnId = "St"                                       # eenheid: stuks
-                QuUn = ([double]$_.Aantal).ToString($inv)
-                Qu   = ([double]$_.Aantal).ToString($inv)
-                QuSa = ([double]$_.Aantal).ToString($inv)
-                Upri = ([double]$_.Prijs).ToString($inv)
-                AmCo = ([double]$_.Kostprijs).ToString($inv)
+        if ($_.Kind -eq 'txt') {
+            # === TXT-regel (VaIt=3): Diensten-item dat NIET in AFAS bestaat ===
+            # Ds bevat de SB-info (omschrijving + aantal + prijs + kostprijs), max 255 tekens.
+            # ItCd = "SBO" (vaste AFAS text-item-code); geen aantallen/bedragen op de regel zelf.
+            $txtDs = "{0} - aantal {1}, prijs {2}, kostprijs {3}" -f `
+                $_.Tekst, `
+                ([double]$_.Aantal).ToString($inv), `
+                ([double]$_.Prijs).ToString($inv), `
+                ([double]$_.Kostprijs).ToString($inv)
+            if ($txtDs.Length -gt 255) { $txtDs = $txtDs.Substring(0, 255) }
+            @{
+                Fields = @{
+                    VaIt = "3"
+                    ItCd = "SBO"
+                    Ds   = $txtDs
+                    UnId = ""
+                    QuUn = ""
+                    Qu   = ""
+                    QuSa = ""
+                    Upri = ""
+                    AmCo = ""
+                }
+            }
+        }
+        else {
+            $isWerksoort = ($_.Soort -eq '1')
+            @{
+                Fields = @{
+                    VaIt = if ($_.Soort) { $_.Soort } else { "2" }   # 2=artikel, 1=werksoort
+                    ItCd = $_.ItemCode
+                    UnId = if ($isWerksoort) { "" } else { "St" }    # werksoort: geen eenheid; artikel: stuks
+                    QuUn = ([double]$_.Aantal).ToString($inv)
+                    Qu   = ([double]$_.Aantal).ToString($inv)
+                    QuSa = ([double]$_.Aantal).ToString($inv)
+                    Upri = ([double]$_.Prijs).ToString($inv)
+                    # Werksoorten hebben ALTIJD kostprijs 0; artikelen dragen hun eigen kostprijs.
+                    AmCo = if ($isWerksoort) { "0" } else { ([double]$_.Kostprijs).ToString($inv) }
+                }
             }
         }
     })
@@ -451,6 +519,22 @@ function Invoke-SalesbuildrRequest {
     }
 
     return $response.Content | ConvertFrom-Json
+}
+
+function Get-SalesbuildrCategoryParentMap {
+    # Haalt alle SB-categorieën op (GET /public-api/category, platte lijst met
+    # parentCategoryId) en bouwt een map category.id -> parentCategoryId (leeg voor
+    # hoofdcategorieën). Wordt aan het begin van de run opgebouwd en gebruikt om een
+    # quote-regel-(sub)categorie naar zijn hoofdcategorie te herleiden
+    # (Get-SalesbuildrMainCategoryId), want alleen hoofdcategorieën zijn op AFAS gemapt.
+    $categories = @(Invoke-SalesbuildrRequest -Uri "$($Global:SalesbuildrUri)/public-api/category")
+    $map = @{}
+    foreach ($c in $categories) {
+        if (-not [string]::IsNullOrWhiteSpace($c.id)) {
+            $map[$c.id] = if ($null -ne $c.parentCategoryId) { [string]$c.parentCategoryId } else { '' }
+        }
+    }
+    return $map
 }
 
 function Get-SalesbuildrClosedOpportunities {
@@ -624,23 +708,48 @@ function Get-SalesbuildrProductCustomField {
     return $null
 }
 
-function Resolve-AfasLineItem {
-    # Bepaalt per SB-quote-regel de AFAS-itemcode (ItCd) én het regeltype (VaIt):
-    #   - mpn aanwezig             -> ItCd = mpn,        VaIt = "2" (artikel)
-    #   - geen mpn, wél werksoort  -> ItCd = werksoort,  VaIt = "1" (werksoort/dienst)
-    #   - geen van beide           -> $null (regel is niet naar AFAS te mappen)
-    # De werksoort komt uit het custom field 'AFAS werksoort' op het gekoppelde product;
-    # die waarde IS de AFAS-itemcode van de werksoort (moet in AFAS bestaan — werksoorten
-    # worden niet aangemaakt via FbItemArticle). Vrije regels zonder product hebben er geen.
+function Get-SalesbuildrProductInternalId {
+    # Leest het product-veld 'internalProductId' van het aan de regel gekoppelde product.
+    # LET OP: de inline product-referentie op de quote-regel (IdentifiedEntityResponseDto)
+    # draagt alléén id/name/externalIdentifier/labels/customFields — NIET internalProductId.
+    # Daarom wordt hier altijd het volledige product opgehaald (gecachet via
+    # Get-SalesbuildrProductById). $null als er geen gekoppeld product is of het veld leeg is.
     param($Line)
 
-    if (-not [string]::IsNullOrWhiteSpace($Line.mpn)) {
-        return [pscustomobject]@{ ItemCode = ([string]$Line.mpn).Trim(); VaIt = '2'; Kind = 'artikel' }
+    if ($null -eq $Line.product -or [string]::IsNullOrWhiteSpace($Line.product.id)) {
+        return $null
     }
 
-    $Werksoort = Get-SalesbuildrProductCustomField -Line $Line -FieldName 'AFAS werksoort'
-    if (-not [string]::IsNullOrWhiteSpace($Werksoort)) {
-        return [pscustomobject]@{ ItemCode = $Werksoort; VaIt = '1'; Kind = 'werksoort' }
+    $Product = Get-SalesbuildrProductById -ProductId $Line.product.id
+    $val = $Product.internalProductId
+    if (-not [string]::IsNullOrWhiteSpace([string]$val)) { return ([string]$val).Trim() }
+
+    return $null
+}
+
+function Resolve-AfasLineItem {
+    # Bepaalt per SB-quote-regel de AFAS-itemcode (ItCd) én het regeltype (VaIt):
+    #   - mpn aanwezig                          -> ItCd = mpn, VaIt = "2" (artikel)
+    #   - geen mpn, hoofdcategorie = 'Diensten' -> Kind = 'diensten', ItCd = internalProductId
+    #     (mag leeg zijn); of de regel een werksoort (VaIt=1) of een TXT-regel wordt, hangt af
+    #     van of internalProductId in AFAS bestaat — dat wordt LATER (stap 2b/2c) bepaald,
+    #     zodat de bestaanscontrole per unieke code kan worden ge-dedupliceerd.
+    #   - geen van beide                        -> $null (regel is niet naar AFAS te mappen)
+    # Diensten-items worden NOOIT in AFAS aangemaakt: bestaat internalProductId in AFAS dan
+    # wordt het een werksoort-regel, anders een TXT-regel (opportunity wordt niet overgeslagen).
+    param($Line, $CategoryParentMap, [string]$DienstenMainCategoryId)
+
+    if (-not [string]::IsNullOrWhiteSpace($Line.mpn)) {
+        return [pscustomobject]@{ ItemCode = ([string]$Line.mpn).Trim(); VaIt = '2'; Kind = 'artikel'; Name = $Line.name }
+    }
+
+    # Geen mpn: alleen regels onder de hoofdcategorie 'Diensten' worden via internalProductId
+    # herleid; andere mpn-loze regels zijn niet naar AFAS te mappen.
+    $MainCatId = Get-SalesbuildrMainCategoryId -CategoryId $Line.category.id -ParentMap $CategoryParentMap
+    if ($MainCatId -and $MainCatId -eq $DienstenMainCategoryId) {
+        $InternalId = Get-SalesbuildrProductInternalId -Line $Line
+        $ItemCode   = if ($InternalId) { $InternalId } else { '' }
+        return [pscustomobject]@{ ItemCode = $ItemCode; VaIt = '1'; Kind = 'diensten'; Name = $Line.name }
     }
 
     return $null
@@ -726,6 +835,13 @@ try {
     $SalesbuildrApiKey = $config.salesbuildr.apikey
     $SalesbuildrUrl    = $config.salesbuildr.url
 
+    # SB-hoofdcategorie 'Diensten': regels onder deze hoofdcategorie hebben geen mpn en
+    # worden via het product-veld internalProductId naar AFAS herleid (werksoort als het
+    # in AFAS bestaat, anders een TXT-regel). Ontbreekt de config-waarde -> val terug op
+    # de bekende id, zodat bestaande configs zonder deze sleutel blijven werken.
+    $DienstenMainCatId = $config.salesbuildr.diensten_maincategory_id
+    if ([string]::IsNullOrWhiteSpace($DienstenMainCatId)) { $DienstenMainCatId = 'UyOpp42UPGy3LKgSOQGX' }
+
     # Flow-schakelaars uit config.xml (<flows><flow1>/<flow2>). Ontbrekend -> aan.
     $Flow1Enabled = ConvertTo-ConfigBool -Value $config.flows.flow1 -Default $true
     $Flow2Enabled = ConvertTo-ConfigBool -Value $config.flows.flow2 -Default $true
@@ -750,22 +866,29 @@ try {
     $ConnVoorcalcGet    = $config.afas.connectors.voorcalculatie_get   # Salesbuildr_Voorcalculatie
     $ConnVoorcalcUpdate = $config.afas.connectors.voorcalculatie_update # KnQuotation
 
-    # Mapping SalesBuildr productcategorie (category.id) -> AFAS artikelgroep (Grp),
-    # uit mapping-artikelgroepen.xml. Eén directe hop: de quote-regel draagt zelf
-    # category.id, dus de cost-center-omweg (via /public-api/category) is niet meer
-    # nodig. Alleen categorieën met een ingevulde AFAS-id worden opgenomen; een
-    # (nog) niet gemapte categorie ontbreekt in de map en laat stap 2b het artikel
-    # overslaan. Gebruikt in Flow 2 stap 2b bij het aanmaken van ontbrekende artikels.
-    $ArtikelgroepMap     = @{}   # SB category.id -> AFAS artikelgroep-code (Grp)
-    $ArtikelgroepNaamMap = @{}   # SB category.id -> AFAS artikelgroep-omschrijving (naam, alleen voor logging)
+    # Mapping SalesBuildr HOOFDcategorie -> AFAS artikelgroep (Grp), uit
+    # mapping-artikelgroepen.xml. Alleen hoofdcategorieën worden gemapt: een quote-regel
+    # draagt een (sub)categorie, die wordt via de SB-categorieboom eerst naar zijn
+    # hoofdcategorie herleid (zie $CategoryParentMap hieronder). Alleen hoofdcategorieën
+    # met een ingevulde AFAS-id worden opgenomen; een (nog) niet gemapte hoofdcategorie
+    # ontbreekt in de map en laat stap 2b het artikel overslaan. Gebruikt in Flow 2
+    # stap 2b bij het aanmaken van ontbrekende artikels.
+    $ArtikelgroepMap     = @{}   # SB hoofdcategorie.id -> AFAS artikelgroep-code (Grp)
+    $ArtikelgroepNaamMap = @{}   # SB hoofdcategorie.id -> AFAS artikelgroep-omschrijving (naam, alleen voor logging)
     $MappingXml = [xml](Get-Content "$PSScriptRoot\configs\mapping-artikelgroepen.xml" -Raw)
     foreach ($c in $MappingXml.'mapping-artikelgroepen'.categorie) {
-        if ($c.'SB-id' -and -not [string]::IsNullOrWhiteSpace($c.'AFAS-id')) {
-            $ArtikelgroepMap[$c.'SB-id']     = $c.'AFAS-id'
-            $ArtikelgroepNaamMap[$c.'SB-id'] = $c.'AFAS-naam'
+        if ($c.'SB-maincat-id' -and -not [string]::IsNullOrWhiteSpace($c.'AFAS-id')) {
+            $ArtikelgroepMap[$c.'SB-maincat-id']     = $c.'AFAS-id'
+            $ArtikelgroepNaamMap[$c.'SB-maincat-id'] = $c.'AFAS-naam'
         }
     }
-    Write-Log INFO "$($ArtikelgroepMap.Count) artikelgroep-mapping(s) (SB-categorie -> Grp) geladen uit mapping-artikelgroepen.xml"
+    Write-Log INFO "$($ArtikelgroepMap.Count) artikelgroep-mapping(s) (SB-hoofdcategorie -> Grp) geladen uit mapping-artikelgroepen.xml"
+
+    # SB-categorieboom: alle categorieën met hun parent ophalen (GET /public-api/category)
+    # zodat een quote-regel-(sub)categorie naar zijn hoofdcategorie herleid kan worden —
+    # alleen hoofdcategorieën zijn op AFAS gemapt. Eén keer per run opgehaald.
+    $CategoryParentMap = Get-SalesbuildrCategoryParentMap
+    Write-Log INFO "$($CategoryParentMap.Count) SB-categorie(ën) opgehaald voor hoofdcategorie-herleiding"
 
 
     ####################################################################
@@ -806,7 +929,7 @@ try {
             $CompanyExtId = "afas-Organisatie-$($Forecast.organisatie)"
 
             # Organisatie (nog) niet gesynchroniseerd naar SalesBuildr -> loggen en overslaan.
-            # TODO: deze waarschuwingen ook opnemen in de notificatie-email (zie Roadmap).
+            # TODO: deze waarschuwingen ook opnemen in de notificatie-email (zie docs/TODO.md).
             $Company = Get-SalesbuildrCompanyByExtId -ExternalId $CompanyExtId
             if ($null -eq $Company) {
                 Write-Log WARNING "[Flow 1] Organisatie $($Forecast.organisatie) niet gevonden in SalesBuildr ($CompanyExtId) — Forecast '$($Forecast.forecastOmschrijving)' overgeslagen"
@@ -991,35 +1114,37 @@ try {
         $AllWonLines = @($WonQuoteLines.Values | ForEach-Object { $_ })
 
         # Resolve elke regel naar een AFAS-itemcode (ItCd) + regeltype (VaIt):
-        #   mpn aanwezig            -> ItCd = mpn,        VaIt = "2" (artikel)   -> aanmaken indien afwezig
-        #   geen mpn, wél werksoort -> ItCd = werksoort,  VaIt = "1" (werksoort) -> NIET aanmaken, moet bestaan
-        #   geen van beide          -> onmapbare regel -> hele opportunity vasthouden (zie 2c)
+        #   mpn aanwezig                 -> ItCd = mpn, VaIt = "2" (artikel) -> aanmaken indien afwezig
+        #   geen mpn, hoofdcat Diensten  -> Kind = 'diensten', ItCd = internalProductId (mag leeg);
+        #                                   werksoort (bestaat in AFAS) of TXT-regel (bestaat niet) -> zie 2b/2c
+        #   geen van beide               -> onmapbare regel -> hele opportunity vasthouden (zie 2c)
         # De resolutie per regel (op quote-item-id) wordt in stap 2c hergebruikt.
         $LineResolution = @{}
         foreach ($Line in $AllWonLines) {
-            $LineResolution[$Line.id] = Resolve-AfasLineItem -Line $Line
+            $LineResolution[$Line.id] = Resolve-AfasLineItem -Line $Line `
+                -CategoryParentMap $CategoryParentMap -DienstenMainCategoryId $DienstenMainCatId
         }
 
-        # Itemcodes die niet in AFAS beschikbaar zijn (ontbrekende artikelgroep-mapping,
-        # een fout bij aanmaken, of een ontbrekende werksoort) -> in stap 2c wordt de HELE
-        # opportunity overgeslagen (anders wijst de voorcalc-regel naar een niet-bestaand
-        # item) en blijft de Forecast open. Zie de skip-logica in stap 2c.
+        # Itemcodes die niet in AFAS beschikbaar zijn (ontbrekende artikelgroep-mapping of
+        # een fout bij aanmaken van een artikel) -> in stap 2c wordt de HELE opportunity
+        # overgeslagen (anders wijst de voorcalc-regel naar een niet-bestaand item) en blijft
+        # de Forecast open. Zie de skip-logica in stap 2c. Diensten-regels komen hier NOOIT
+        # in: ze degraderen naar een TXT-regel i.p.v. de opportunity vast te houden.
         $FailedItemCodes = @()
 
-        # Werksoorten (VaIt=1): worden NIET aangemaakt (FbItemArticle maakt alleen
-        # artikelen); ze moeten al in AFAS bestaan. Ontbreekt er één -> markeren als
-        # niet-beschikbaar, zodat de opportunity('s) met die regel worden overgeslagen.
-        $WerksoortCodes = @($LineResolution.Values |
-            Where-Object { $_ -and $_.Kind -eq 'werksoort' } |
+        # Diensten (Kind='diensten', VaIt=1): worden NOOIT aangemaakt. Per unieke, niet-lege
+        # internalProductId controleren of die in AFAS bestaat -> $DienstenExists. Bestaat de
+        # code dan wordt het een werksoort-regel, anders (leeg of onbekend) een TXT-regel;
+        # de keuze valt in stap 2c. Diensten worden nooit in $FailedItemCodes gezet.
+        $DienstenExists = @{}
+        $DienstenCodes  = @($LineResolution.Values |
+            Where-Object { $_ -and $_.Kind -eq 'diensten' -and -not [string]::IsNullOrWhiteSpace($_.ItemCode) } |
             ForEach-Object { $_.ItemCode } | Sort-Object -Unique)
-        foreach ($Code in $WerksoortCodes) {
-            $BestaatWerksoort = $null -ne (Get-AfasArtikelByItemCode -Connector $ConnArtikelenGet -ItemCode $Code)
-            Write-Log INFO "[Flow 2] Werksoort [$Code] | VaIt=1 (dienst) | bestaat in AFAS: $BestaatWerksoort"
-            if (-not $BestaatWerksoort) {
-                Write-Log WARNING "Werksoort [$Code] bestaat niet in AFAS — wordt NIET aangemaakt (alleen artikelen); opportunity(s) met deze regel worden overgeslagen"
-                $FailedItemCodes += $Code
-                $Flow2Complete = $false
-            }
+        foreach ($Code in $DienstenCodes) {
+            $Bestaat = $null -ne (Get-AfasArtikelByItemCode -Connector $ConnArtikelenGet -ItemCode $Code)
+            $DienstenExists[$Code] = $Bestaat
+            Write-Log INFO ("[Flow 2] Dienst [internalProductId {0}] | bestaat in AFAS: {1} -> {2}" -f `
+                $Code, $Bestaat, $(if ($Bestaat) { 'werksoort-regel (VaIt=1)' } else { 'TXT-regel' }))
         }
 
         # Artikelen (VaIt=2): de unieke mpn's; aanmaken indien afwezig.
@@ -1027,25 +1152,28 @@ try {
             Where-Object { $_ -and $_.Kind -eq 'artikel' } |
             ForEach-Object { $_.ItemCode } | Sort-Object -Unique)
 
-        Write-Log INFO "$($AllItemCodes.Count) unieke artikelcode(s) (mpn) en $($WerksoortCodes.Count) werksoort(en) gevonden in de gewonnen quotations"
+        Write-Log INFO "$($AllItemCodes.Count) unieke artikelcode(s) (mpn) en $($DienstenCodes.Count) diensten-code(s) (internalProductId) gevonden in de gewonnen quotations"
 
         foreach ($ItemCode in $AllItemCodes) {
             # Bronregel voor de omschrijving (name), de item-ids en de categorie.
             $BronRegel = $AllWonLines | Where-Object { $_.mpn -eq $ItemCode } | Select-Object -First 1
 
-            # SB-categorie (van de regel) en de gemapte AFAS-artikelgroep (code + naam).
+            # SB-(sub)categorie van de regel -> via de categorieboom naar de hoofdcategorie
+            # -> gemapte AFAS-artikelgroep (code + naam). Alleen hoofdcategorieën zijn gemapt.
             $SbCatId    = $BronRegel.category.id
             $SbCatNaam  = $BronRegel.category.name
-            $Artikelgroep     = Get-AfasArtikelgroep -Category $BronRegel.category -ArtikelgroepMap $ArtikelgroepMap
-            $ArtikelgroepNaam = if ($SbCatId -and $ArtikelgroepNaamMap.ContainsKey($SbCatId)) { $ArtikelgroepNaamMap[$SbCatId] } else { $null }
+            $MainCatId  = Get-SalesbuildrMainCategoryId -CategoryId $SbCatId -ParentMap $CategoryParentMap
+            $Artikelgroep     = Get-AfasArtikelgroep -Category $BronRegel.category -ArtikelgroepMap $ArtikelgroepMap -CategoryParentMap $CategoryParentMap
+            $ArtikelgroepNaam = if ($MainCatId -and $ArtikelgroepNaamMap.ContainsKey($MainCatId)) { $ArtikelgroepNaamMap[$MainCatId] } else { $null }
 
             # Bestaanscontrole: per mpn een gefilterde lookup (itemCode = ...), i.p.v. de
             # volledige catalogus van 30.000+ artikels op te halen.
             $BestaatInAfas = $null -ne (Get-AfasArtikelByItemCode -Connector $ConnArtikelenGet -ItemCode $ItemCode)
 
-            Write-Log INFO ("[Flow 2] Artikel '{0}' | mpn/ItCd {1} | item-id {2} | product-id {3} | SB-cat '{4}' ({5}) | AFAS-cat {6} ({7}) | bestaat in AFAS: {8}" -f `
+            Write-Log INFO ("[Flow 2] Artikel '{0}' | mpn/ItCd {1} | item-id {2} | product-id {3} | SB-cat '{4}' ({5}) | SB-hoofdcat {6} | AFAS-cat {7} ({8}) | bestaat in AFAS: {9}" -f `
                 $BronRegel.name, $ItemCode, $BronRegel.id, $BronRegel.product.id, `
                 $SbCatNaam, $SbCatId, `
+                $(if ($MainCatId) { $MainCatId } else { '-' }), `
                 $(if ($ArtikelgroepNaam) { "'$ArtikelgroepNaam'" } else { '-' }), `
                 $(if ($Artikelgroep) { $Artikelgroep } else { 'niet gemapt' }), `
                 $BestaatInAfas)
@@ -1057,7 +1185,7 @@ try {
 
             # Artikelgroep (Grp) is verplicht bij aanmaken; ontbreekt de mapping -> overslaan.
             if ([string]::IsNullOrWhiteSpace($Artikelgroep)) {
-                Write-Log WARNING "Artikel [$ItemCode] overgeslagen: categorie '$SbCatNaam' (id $SbCatId) niet gemapt in mapping-artikelgroepen.xml"
+                Write-Log WARNING "Artikel [$ItemCode] overgeslagen: categorie '$SbCatNaam' (id $SbCatId, hoofdcategorie $(if ($MainCatId) { $MainCatId } else { 'onbekend' })) niet gemapt in mapping-artikelgroepen.xml"
                 $FailedItemCodes += $ItemCode
                 $Flow2Complete = $false
                 continue
@@ -1108,21 +1236,22 @@ try {
                 Write-Log INFO "[$OpportunityId] AFAS-quotation al aanwezig ($($ForecastKey.ForecastId)) — aanmaken overgeslagen, Forecast wordt wel gesloten"
             }
             else {
-                # Elke regel moet naar een AFAS-item te mappen zijn (artikel via mpn, of
-                # werksoort via het custom field) én dat item moet in AFAS beschikbaar zijn.
-                # Zodra één regel onmapbaar is (geen mpn en geen werksoort) of naar een niet-
-                # beschikbaar item verwijst (artikel niet aangemaakt / werksoort ontbreekt),
-                # slaan we de HELE opportunity over: een onvolledige voorcalculatie of een
-                # regel naar een niet-bestaand item mag niet ontstaan. De AFAS-quotation wordt
-                # NIET aangemaakt en de Forecast wordt NIET gesloten — die blijft open. Het
-                # watermerk blijft staan, zodat de opportunity opnieuw wordt geprobeerd.
+                # Elke regel moet naar een AFAS-item te mappen zijn (artikel via mpn, of een
+                # Diensten-regel via internalProductId) én — voor artikelen — beschikbaar zijn.
+                # Zodra één regel onmapbaar is (geen mpn en niet in hoofdcategorie Diensten) of
+                # naar een niet-beschikbaar artikel verwijst (niet aangemaakt), slaan we de HELE
+                # opportunity over: een onvolledige voorcalculatie of een regel naar een niet-
+                # bestaand item mag niet ontstaan. De AFAS-quotation wordt NIET aangemaakt en de
+                # Forecast wordt NIET gesloten — die blijft open, watermerk blijft staan zodat de
+                # opportunity opnieuw wordt geprobeerd. Diensten-regels veroorzaken NOOIT een skip:
+                # ze worden een werksoort (bestaat in AFAS) of degraderen naar een TXT-regel.
                 $Probleemregels = @()
                 foreach ($Line in $Lines) {
                     $Res = $LineResolution[$Line.id]
                     if ($null -eq $Res) {
-                        $Probleemregels += "regel '$($Line.name)' (geen mpn en geen 'AFAS werksoort')"
+                        $Probleemregels += "regel '$($Line.name)' (geen mpn en niet in hoofdcategorie Diensten)"
                     }
-                    elseif ($FailedItemCodes -contains $Res.ItemCode) {
+                    elseif ($Res.Kind -ne 'diensten' -and $FailedItemCodes -contains $Res.ItemCode) {
                         $Probleemregels += "$($Res.Kind) '$($Res.ItemCode)' (niet beschikbaar in AFAS)"
                     }
                 }
@@ -1134,17 +1263,46 @@ try {
 
                 $Regels = @()
                 foreach ($Line in $Lines) {
-                    # Resolutie uit stap 2b: ItCd = mpn (artikel, VaIt=2) of werksoort-code
-                    # (dienst, VaIt=1). Hierboven is al gegarandeerd dat $Res niet $null is.
+                    # Resolutie uit stap 2b. Hierboven is al gegarandeerd dat $Res niet $null is.
+                    # QuoteItemResponseDto: 'quantity', 'price' = verkoopprijs p/st (Upri),
+                    # 'cost' = kostprijs p/st (AmCo).
                     $Res = $LineResolution[$Line.id]
-                    $Regels += @{
-                        # QuoteItemResponseDto: 'quantity', 'price' = verkoopprijs p/st (Upri),
-                        # 'cost' = kostprijs p/st (AmCo). ItemCode/Soort komen uit de resolutie.
-                        ItemCode  = $Res.ItemCode
-                        Soort     = $Res.VaIt
-                        Aantal    = $Line.quantity
-                        Prijs     = $Line.price
-                        Kostprijs = $Line.cost
+
+                    if ($Res.Kind -eq 'diensten') {
+                        # Diensten-regel: bestaat internalProductId in AFAS -> werksoort-regel
+                        # (VaIt=1, ItCd = internalProductId); anders (leeg of onbekend in AFAS)
+                        # -> TXT-regel (geen ItCd, de regelnaam gaat mee als tekst).
+                        $CodeBestaat = (-not [string]::IsNullOrWhiteSpace($Res.ItemCode)) -and $DienstenExists[$Res.ItemCode]
+                        if ($CodeBestaat) {
+                            # === Werksoort-regel — payload volgt van gebruiker (baseline hieronder) ===
+                            $Regels += @{
+                                ItemCode  = $Res.ItemCode
+                                Soort     = '1'
+                                Aantal    = $Line.quantity
+                                Prijs     = $Line.price
+                                Kostprijs = $Line.cost
+                            }
+                        }
+                        else {
+                            # === TXT-regel — payload volgt van gebruiker ===
+                            $Regels += @{
+                                Kind      = 'txt'
+                                Tekst     = $Line.name
+                                Aantal    = $Line.quantity
+                                Prijs     = $Line.price
+                                Kostprijs = $Line.cost
+                            }
+                        }
+                    }
+                    else {
+                        # Artikel (mpn, VaIt=2). ItemCode/Soort komen uit de resolutie.
+                        $Regels += @{
+                            ItemCode  = $Res.ItemCode
+                            Soort     = $Res.VaIt
+                            Aantal    = $Line.quantity
+                            Prijs     = $Line.price
+                            Kostprijs = $Line.cost
+                        }
                     }
                 }
 

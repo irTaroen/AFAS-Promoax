@@ -1631,8 +1631,47 @@ Creates the **AFAS quotation** (`KnQuotation`, voorcalculatie — distinct from 
 - `Ds` (omschrijving) = the SB quote's `title` (`QuoteResponseDto.title`), capped at 100 chars (AFAS limit).
 - `QuDa` is currently the current date (placeholder — revisit later for a real quote date).
 - `Objects` holds one `KnQuotationLine` with one `Element` array containing one entry per quote line (see example above — one article line, one werksoort line).
-- **Line fields (`ItCd`/`VaIt` resolved per line by `Resolve-AfasLineItem`):** `ItCd = mpn` with `VaIt = "2"` (artikel) when the quote line has an `mpn`; otherwise `ItCd` = the AFAS werksoort code from the SB product custom field **"AFAS werksoort"** with `VaIt = "1"` (werksoort/dienst) — see [Salesbuildr_API_Guide.md](Salesbuildr_API_Guide.md#promax-implementation-notes-sync-forecastsps1) for how the werksoort is looked up. Werksoorten are **referenced only** — they are never created via `FbItemArticle` (that connector creates articles, `VaTp`/`type=2`, only); a werksoort code that doesn't already exist in AFAS (checked via the same `Salesbuildr_Artikelen.itemCode` lookup used for articles) marks that line's item unavailable. A line with neither an `mpn` nor a werksoort is unmappable. `New-AfasQuotation` sets `VaIt` from each Regel's `Soort` field (falls back to `"2"` if absent). `UnId` = unit, always `"St"` (stuks/pieces) — set on every line regardless of `VaIt`. `QuUn`/`Qu`/`QuSa` are all set to the line `quantity`. `Upri` = per-unit sell price (`price`), `AmCo` = per-unit cost (`cost`). All amounts are serialized as invariant-culture strings with a **dot** decimal separator (e.g. `"1749.03"`, never `"1749,03"`).
-- ⚠️ **Whole-opportunity enforcement:** if any line of a Won opportunity is unmappable (no `mpn` and no werksoort) or resolves to an item unavailable in AFAS (article that failed to create, or a werksoort missing from AFAS), the **entire opportunity** is skipped in Stap 2c — the AFAS quotation is not created and the originating Forecast is **not** closed (stays open), with the watermark held for retry. This extends the earlier unmapped-artikelgroep skip (see `Grp` below) to cover unmappable/unavailable lines in general.
+- **Line fields (`ItCd`/`VaIt` resolved per line by `Resolve-AfasLineItem`):** `ItCd = mpn` with `VaIt = "2"` (artikel) when the quote line has an `mpn`; otherwise, when the line's main category is **"Diensten"** (`configs/config.xml`'s `<salesbuildr><diensten_maincategory_id>`, SB main-category id `UyOpp42UPGy3LKgSOQGX` by default), `ItCd` = the line's **`internalProductId`** (via `Get-SalesbuildrProductInternalId` — always a full `GET /public-api/product/{id}` fetch, the inline quote-line `product` reference never carries `internalProductId`) with `VaIt = "1"` (werksoort) if that code already exists in AFAS, or `VaIt = "3"` (tekstregel/TXT, `ItCd` forced to `"SBO"`) if it doesn't (or `internalProductId` is blank) — see the **three `KnQuotationLine` shapes** below and [Salesbuildr_API_Guide.md](Salesbuildr_API_Guide.md#promax-implementation-notes-sync-forecastsps1) for the full resolution logic. The **old "AFAS werksoort" product custom field is no longer read** — a werksoort must now sit under the Diensten main category. Diensten item codes are **referenced only**, same as before — never created via `FbItemArticle` (that connector creates articles, `VaTp`/`type=2`, only) — but a Diensten code missing from AFAS no longer makes the line unavailable; it becomes a TXT line instead (never a skip). A line with neither an `mpn` nor a Diensten main category is unmappable. `New-AfasQuotation` sets `VaIt` from each Regel's `Soort` field (falls back to `"2"` if absent). `UnId` = unit: `"St"` (stuks/pieces) on artikel lines, **empty string `""`** on werksoort and TXT lines. `QuUn`/`Qu`/`QuSa` are all set to the line `quantity` on artikel/werksoort lines, and to **empty strings** on a TXT line. `Upri` = per-unit sell price (`price`) on artikel/werksoort lines, empty string on TXT. `AmCo` = per-unit cost (`cost`) on an artikel line, **always `"0"`** on a werksoort line, empty string on TXT. All amounts are serialized as invariant-culture strings with a **dot** decimal separator (e.g. `"1749.03"`, never `"1749,03"`).
+- ⚠️ **Whole-opportunity enforcement:** if any line of a Won opportunity is unmappable (no `mpn` and not a Diensten line) or resolves to an **article** unavailable in AFAS (failed to create), the **entire opportunity** is skipped in Stap 2c — the AFAS quotation is not created and the originating Forecast is **not** closed (stays open), with the watermark held for retry. This extends the earlier unmapped-artikelgroep skip (see `Grp` below) to cover unmappable/unavailable article lines in general. **Diensten lines are exempt** — a Diensten line always resolves to a werksoort or TXT line (see below) and can never trigger this skip, even when its `internalProductId` doesn't exist in AFAS.
+
+#### The three `KnQuotationLine` shapes (`VaIt` values)
+
+`VaIt` on a `KnQuotationLine` was previously undocumented here; it now has three possible values, all produced by `Resolve-AfasLineItem` / `New-AfasQuotation`:
+
+| `VaIt` | Meaning | When |
+|---|---|---|
+| `"2"` | Artikel | Quote line has an `mpn` |
+| `"1"` | Werksoort | Quote line has no `mpn`, is under the Diensten main category, and its `internalProductId` already exists in AFAS |
+| `"3"` | Tekstregel (TXT) | Quote line has no `mpn`, is under the Diensten main category, and its `internalProductId` is blank or not found in AFAS |
+
+Exact field shapes:
+
+```json
+// Artikel — VaIt "2"
+{ "Fields": {
+    "VaIt": "2", "ItCd": "EP2-20095", "UnId": "St",
+    "QuUn": "1", "Qu": "1", "QuSa": "1",
+    "Upri": "1749.03", "AmCo": "1381.73"
+}}
+
+// Werksoort — VaIt "1" (AmCo is always "0")
+{ "Fields": {
+    "VaIt": "1", "ItCd": "<internalProductId>", "UnId": "",
+    "QuUn": "2", "Qu": "2", "QuSa": "2",
+    "Upri": "99.95", "AmCo": "0"
+}}
+
+// Tekstregel / TXT — VaIt "3" (ItCd fixed to "SBO"; no quantities or amounts)
+{ "Fields": {
+    "VaIt": "3", "ItCd": "SBO",
+    "Ds": "Implementatie werkplek - aantal 2, prijs 99.95, kostprijs 60.00",
+    "UnId": "", "QuUn": "", "Qu": "", "QuSa": "", "Upri": "", "AmCo": ""
+}}
+```
+
+- The TXT line's `Ds` is the composed info string `"{name} - aantal {qty}, prijs {price}, kostprijs {cost}"`, capped at **255 chars** (not the 100-char cap used elsewhere for `Ds`/`FbItemArticle.Ds`).
+- A werksoort line's `AmCo` is **always `"0"`**, regardless of the SB quote line's actual `cost` — Diensten lines never carry a real cost price into AFAS.
+- A TXT line has no `UnId`, quantities, or amounts at all — all five are empty strings, not `"0"` or omitted.
 - ⚠️ **Known caveat:** `Upri` uses the raw per-unit `price` and does **not** apply the item `discount` — unlike `CmForecast.OrAF` (see above), which does apply discount. Pending confirmation; not yet fixed in code.
 - The OLD shape — `QuId`/`DbId`/`QuDa`/`Ds`/`CuId`/`FcNo` all inside `Fields`, with line fields `ItCd`/`Qu`/`UP` and no `UnId` — is obsolete.
 - Function names: `New-AfasQuotation` (was `New-AfasVoorcalculatie`) creates the quotation; `Get-AfasQuotation` (was `Get-AfasVoorcalculatie`) does the idempotency lookup.
@@ -1657,7 +1696,7 @@ GET /connectors/Salesbuildr_Artikelen?filterfieldids=itemCode&filtervalues={mpn}
 > - `ItCd` = the Salesbuildr quote line's **`mpn`** (always — the `product` field is nullable). Lines without an `mpn` are skipped.
 > - `AuId` = always `false` (item code is supplied explicitly, no AFAS auto-numbering).
 > - `Ds` = the item `name`, capped at 100 characters (AFAS limit).
-> - `Grp` (artikelgroep, **required**) is now a **direct one-hop** lookup: quote line `category.id` → `configs/mapping-artikelgroepen.xml` (`<categorie SB-id="..." AFAS-id="..." AFAS-naam="..."/>`) → `Grp`. The old two-hop route — `GET /public-api/category` → `costCenterId` → `configs/config.xml`'s `<artikelgroepmapping><costcenter>` — is obsolete; that config block has been removed entirely. A category missing from the mapping file, or mapped with an empty `AFAS-id`, causes the article — and its whole opportunity — to be skipped with a WARNING (watermark held for retry). See `Get-AfasArtikelgroep` / `New-AfasArtikel` and Flow 2 step 2b.
+> - `Grp` (artikelgroep, **required**) is resolved via a **two-hop main-category lookup**: the quote line's leaf `category.id` is walked up to its main (root) category by `Get-SalesbuildrMainCategoryId`, using the parent map built at startup by `Get-SalesbuildrCategoryParentMap` (`GET /public-api/category`, flat list, keyed by `parentCategoryId`); that main-category id is then looked up in `configs/mapping-artikelgroepen.xml` (`<categorie SB-maincat-id="..." AFAS-id="..." AFAS-naam="..."/>`) → `Grp`. See [Salesbuildr_API_Guide.md](Salesbuildr_API_Guide.md#article-group-grp-via-configsmapping-artikelgroepenxml) for the full two-hop mechanism. `configs/config.xml`'s old `<artikelgroepmapping><costcenter>` block remains removed (superseded by `configs/mapping-artikelgroepen.xml`). A leaf category that cannot be resolved to a main category, a main category missing from the mapping file, or one mapped with an empty `AFAS-id`, causes the article — and its whole opportunity — to be skipped with a WARNING (watermark held for retry). See `Get-AfasArtikelgroep` (now takes `-CategoryParentMap`) / `New-AfasArtikel` and Flow 2 step 2b.
 > - `BiUn` = `"St"` and `VaRc` = `"2"` — fixed placeholders for now.
 > - The OLD fields `Ds_1043`, `VaTp`, `BiSt`, `CoLa`, `Bl` are no longer sent.
 

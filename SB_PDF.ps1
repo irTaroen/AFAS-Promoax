@@ -403,7 +403,7 @@ try {
         # $Pdf.Base64, met de AFAS-sleutels $Item.PrId (verkooprelatie) en $Item.QuId
         # (quotation-id) erbij. Straks: bouw de door de gebruiker aangeleverde payload
         # en POST die naar de juiste AFAS UpdateConnector (bijv. via een
-        # Send-AfasQuotationPdf-helper). Zie de todo-lijst.
+        # Send-AfasQuotationPdf-helper). Zie docs/TODO.md.
 
         $Ok++
     }
