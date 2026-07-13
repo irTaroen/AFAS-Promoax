@@ -92,17 +92,18 @@ function ConvertFrom-ForecastExternalId {
 
 function Get-SyncWatermark {
     # Leest één sync-watermerk uit het gezamenlijke state-bestand
-    # (configs\LastSyncDates.xml). Ontbrekend bestand/knoop -> Epoch, zodat een
-    # eerste run alles ophaalt. Naam is de flow-sleutel, bv. 'Flow1' / 'Flow2'.
+    # (configs\LastSyncDates.xml). Ontbrekend bestand/knoop -> $DefaultDate
+    # (2026-01-01), zodat een eerste run vanaf die datum ophaalt (niet vanaf de
+    # Unix-epoch). Naam is de flow-sleutel, bv. 'Flow1' / 'Flow2'.
     param(
         [Parameter(Mandatory)] [string] $Path,
         [Parameter(Mandatory)] [string] $Name
     )
-    $Epoch = [datetime]'1970-01-01'
-    if (-not (Test-Path $Path)) { return $Epoch }
+    $DefaultDate = [datetime]'2026-01-01'
+    if (-not (Test-Path $Path)) { return $DefaultDate }
     $xml  = [xml](Get-Content $Path -Raw)
     $node = $xml.SelectSingleNode("/SyncDates/$Name")
-    if ($null -eq $node -or [string]::IsNullOrWhiteSpace($node.InnerText)) { return $Epoch }
+    if ($null -eq $node -or [string]::IsNullOrWhiteSpace($node.InnerText)) { return $DefaultDate }
     return [datetime]::Parse($node.InnerText, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
 }
 
@@ -945,17 +946,21 @@ try {
             }
 
             # Klant-contactpersoon: opzoeken op e-mailadres ('contactpersoonMail' uit de
-            # GetConnector). Contact is optioneel: geen match -> waarschuwen en de
-            # Opportunity zónder contact upserten (Forecast wordt NIET overgeslagen).
+            # GetConnector). Contact is VERPLICHT: geen e-mailadres of geen match ->
+            # loggen en de Forecast overslaan (watermerk vasthouden zodat de volgende
+            # run het opnieuw probeert wanneer het contact wél bestaat).
             $ContactId = $null
             if (-not [string]::IsNullOrWhiteSpace($Forecast.contactpersoonMail)) {
                 $Contact = Get-SalesbuildrContactByEmail -Email $Forecast.contactpersoonMail
                 if ($null -ne $Contact) {
                     $ContactId = $Contact.id
                     Write-Log INFO "[Flow 1] Contact gevonden op $($Forecast.contactpersoonMail) (id: $ContactId)"
-                } else {
-                    Write-Log WARNING "[Flow 1] Geen SalesBuildr-contact gevonden op e-mail '$($Forecast.contactpersoonMail)' — Opportunity wordt zonder contact opgeslagen"
                 }
+            }
+            if ($null -eq $ContactId) {
+                Write-Log WARNING "[Flow 1] Geen SalesBuildr-contact gevonden voor Forecast '$($Forecast.forecastOmschrijving)' (e-mail '$($Forecast.contactpersoonMail)') — overgeslagen"
+                $Flow1Complete = $false
+                continue
             }
 
             $SalesbuildrOpportunity = @{
@@ -971,9 +976,9 @@ try {
                 # *user*; de GetConnector levert diens interne SalesBuildr user-id direct
                 # aan in 'verantwoordelijkeOwnerID', dus koppelen we op ownerId.
                 ownerId        = $Forecast.verantwoordelijkeOwnerID
-            }
-            if ($null -ne $ContactId) {
-                $SalesbuildrOpportunity.contactId = $ContactId
+                # Contact is hierboven al verplicht gesteld (Forecast zonder contact is
+                # overgeslagen), dus $ContactId is hier altijd gezet.
+                contactId      = $ContactId
             }
             if ($null -ne $Forecast.einddatumVerwacht) {
                 $SalesbuildrOpportunity.expectedCloseDate = ([datetime]$Forecast.einddatumVerwacht).ToString("yyyy-MM-dd")
@@ -1007,14 +1012,13 @@ try {
         # Batch-watermark voor Flow 2 (zie toelichting bij Flow 1).
         $Flow2Complete = $true
 
-        # ── ON HOLD (tijdelijk, t.b.v. data-inspectie) ──
-        # Zolang $true schrijft Flow 2 NIETS naar AFAS: geen artikels (FbItemArticle),
-        # geen AFAS-quotation (KnQuotation) en geen Forecast-sluiting (CmForecast, G/N).
-        # Flow 2 haalt en categoriseert alleen en dumpt de quote-items ter inspectie. Het
-        # watermerk wordt daarbij bewust NIET opgeschoven (Flow2Complete blijft $false),
-        # zodat na het uitzetten van deze hold dezelfde Opportunities opnieuw verwerkt
-        # worden. Zet op $false om Flow 2 weer volledig naar AFAS te laten schrijven.
-        $AfasWritesOnHold = $true
+        # ── AFAS-schrijfacties (veiligheidsschakelaar) ──
+        # $false (standaard): Flow 2 schrijft volledig naar AFAS — artikels (FbItemArticle),
+        # AFAS-quotation (KnQuotation) én Forecast-sluiting (CmForecast, G/N). Zet op $true om
+        # Flow 2 tijdelijk ON HOLD te zetten (alleen ophalen + categoriseren, geen writes); het
+        # watermerk schuift dan bewust NIET op zodat dezelfde Opportunities later opnieuw
+        # verwerkt worden.
+        $AfasWritesOnHold = $false
         if ($AfasWritesOnHold) {
             Write-Log WARNING "Flow 2: AFAS-schrijfacties staan ON HOLD — geen artikels/quotations/Forecast-updates; alleen ophalen + inspectie. Watermerk wordt niet opgeschoven."
             $Flow2Complete = $false
@@ -1060,10 +1064,10 @@ try {
                 Write-Log INFO "[Flow 2] Quote $($Quote.id) (nr $($Quote.number)) | status '$($Quote.status)' | klant '$($Quote.company.name)'"
             }
 
-            # ── Inspectie: alle beschikbare velden per quote-item dumpen ──
-            # Tijdelijk t.b.v. het in kaart brengen van de per-regel data (mpn, price,
-            # cost, quantity, discount, category, product, ...). Per item een uitgelijnde
-            # 'veld : waarde'-lijst; geneste objecten (category, product) één niveau diep.
+            # ── Inspectie: alle beschikbare velden per quote-item dumpen (tijdelijk uit) ──
+            # Diagnostische data-dump per quote-regel. Uitgecommentarieerd nu de per-regel
+            # data in kaart is; her-inschakelen voor debugging door het blok te ontcommentariëren.
+            <#
             if ($null -ne $Quote -and $Quote.items) {
                 Write-Log INFO "[$OpportunityId] Quote-items ($($Quote.items.Count)) — data-dump ter inspectie:"
                 $ItemIndex = 0
@@ -1087,6 +1091,7 @@ try {
                     Write-Log INFO $Blok.ToString()
                 }
             }
+            #>
 
             if ($null -ne $Quote -and $Quote.status -eq 'approved') {
                 # ── Won ──
@@ -1164,12 +1169,15 @@ try {
             $SbCatNaam  = $BronRegel.category.name
             $MainCatId  = Get-SalesbuildrMainCategoryId -CategoryId $SbCatId -ParentMap $CategoryParentMap
             $Artikelgroep     = Get-AfasArtikelgroep -Category $BronRegel.category -ArtikelgroepMap $ArtikelgroepMap -CategoryParentMap $CategoryParentMap
-            $ArtikelgroepNaam = if ($MainCatId -and $ArtikelgroepNaamMap.ContainsKey($MainCatId)) { $ArtikelgroepNaamMap[$MainCatId] } else { $null }
+            # $ArtikelgroepNaam alleen voor de (tijdelijk uitgezette) diagnostische dump hieronder.
+            # $ArtikelgroepNaam = if ($MainCatId -and $ArtikelgroepNaamMap.ContainsKey($MainCatId)) { $ArtikelgroepNaamMap[$MainCatId] } else { $null }
 
             # Bestaanscontrole: per mpn een gefilterde lookup (itemCode = ...), i.p.v. de
             # volledige catalogus van 30.000+ artikels op te halen.
             $BestaatInAfas = $null -ne (Get-AfasArtikelByItemCode -Connector $ConnArtikelenGet -ItemCode $ItemCode)
 
+            # Diagnostische per-artikel dump (tijdelijk uit; ontcommentarieer voor debugging).
+            <#
             Write-Log INFO ("[Flow 2] Artikel '{0}' | mpn/ItCd {1} | item-id {2} | product-id {3} | SB-cat '{4}' ({5}) | SB-hoofdcat {6} | AFAS-cat {7} ({8}) | bestaat in AFAS: {9}" -f `
                 $BronRegel.name, $ItemCode, $BronRegel.id, $BronRegel.product.id, `
                 $SbCatNaam, $SbCatId, `
@@ -1177,6 +1185,7 @@ try {
                 $(if ($ArtikelgroepNaam) { "'$ArtikelgroepNaam'" } else { '-' }), `
                 $(if ($Artikelgroep) { $Artikelgroep } else { 'niet gemapt' }), `
                 $BestaatInAfas)
+            #>
 
             if ($BestaatInAfas) {
                 Write-Log INFO "Artikel [$ItemCode] bestaat al in AFAS — overgeslagen"

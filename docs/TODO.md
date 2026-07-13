@@ -22,9 +22,9 @@ losse `TODO`-opmerkingen die verspreid in de code stonden (zie *Herkomst* per it
 ## Voorcalculatie (Flow 2)
 
 - [x] Voorcalculatie pas aanmaken als álle items aanwezig zijn
-- [ ] Text-item voor ontbrekende artikelen
-- [ ] Werksoort: `mpn` is leeg en intern product-id gebruiken
-- [ ] Cost center-id mappen aan cost center-naam en AFAS-artikelgroep
+- [x] Text-item voor ontbrekende artikelen
+- [x] Werksoort: `mpn` is leeg en intern product-id gebruiken
+- [x] Cost center-id mappen aan cost center-naam en AFAS-artikelgroep
 
 ## AFAS
 
