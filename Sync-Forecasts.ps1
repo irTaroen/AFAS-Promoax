@@ -65,6 +65,109 @@ function Write-Log {
         'ERROR'   { Write-Host $line -ForegroundColor Red }
         default   { Write-Host $line }
     }
+
+    # Belangrijke gebeurtenissen (WARNING/ERROR) meenemen in het samenvattende
+    # run-logblok (logs\log.txt), gegroepeerd onder de flow die op dit moment loopt
+    # ($Global:CurrentFlow). INFO-regels blijven alleen op de console.
+    if ($Level -in 'WARNING','ERROR') {
+        (Get-FlowLogBucket).Events.Add("[$timestamp] [$Level] $Message")
+    }
+}
+
+# ── Samenvattend run-logboek (logs\log.txt) ──────────────────────────────────
+# Naast de uitgebreide console-logging (Write-Log) houden we per flow een beknopte
+# samenvatting bij: de belangrijke WARNING/ERROR-gebeurtenissen én de succesvol
+# aangemaakte/verwerkte objecten (opportunities, artikelen, quotations, PDF-bijlagen).
+# Aan het einde van de run schrijft Write-RunLogFile per flow één blok BOVENAAN
+# logs\log.txt (nieuwste run bovenaan; oudere runs schuiven omlaag).
+$Global:FlowLabel = [ordered]@{
+    General = 'Algemeen (setup & credentials)'
+    F1      = 'Flow 1 — Forecasts -> Opportunities'
+    F2      = 'Flow 2 — Items (artikelen)'
+    F3      = 'Flow 3 — Quotations (voorcalculatie)'
+    F4      = 'Flow 4 — PDF (dossieritems)'
+}
+$Global:CurrentFlow = $Global:FlowLabel.General   # welke flow loopt nu (voor de groepering)
+$Global:RunLog      = [ordered]@{}                # flow-label -> @{ Events=[List]; Created=[List] }
+$Global:FlowStatus  = [ordered]@{}                # flow-label -> statusregel (SUCCES/ONVOLLEDIG/UITGESCHAKELD)
+
+function Get-FlowLogBucket {
+    # Geeft (en maakt zo nodig) het verzamel-object voor een flow: één lijst met
+    # gebeurtenissen (WARNING/ERROR) en één met aangemaakte/verwerkte objecten.
+    param([string]$Flow = $Global:CurrentFlow)
+    if (-not $Global:RunLog.Contains($Flow)) {
+        $Global:RunLog[$Flow] = [pscustomobject]@{
+            Events  = [System.Collections.Generic.List[string]]::new()
+            Created = [System.Collections.Generic.List[string]]::new()
+        }
+    }
+    return $Global:RunLog[$Flow]
+}
+
+function Add-CreatedObject {
+    # Legt een succesvol aangemaakt/verwerkt object vast voor het run-logblok (met
+    # tijdstempel), onder de flow die nu loopt.
+    param([string]$Message, [string]$Flow = $Global:CurrentFlow)
+    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    (Get-FlowLogBucket -Flow $Flow).Created.Add("[$ts] $Message")
+}
+
+function Set-FlowStatus {
+    # Zet de statusregel van een flow voor het run-logblok en zorgt dat het blok
+    # bestaat (zodat elke actieve flow altijd in log.txt verschijnt).
+    param([string]$Flow, [bool]$Enabled, [bool]$Complete)
+    Get-FlowLogBucket -Flow $Flow | Out-Null
+    $Global:FlowStatus[$Flow] =
+        if (-not $Enabled) { 'UITGESCHAKELD — state ongewijzigd' }
+        elseif ($Complete) { 'SUCCES — state bijgewerkt' }
+        else               { 'ONVOLLEDIG — state NIET bijgewerkt, herkansing volgende run' }
+}
+
+function Write-RunLogFile {
+    # Schrijft de samenvatting van deze run BOVENAAN het opgegeven bestand
+    # (nieuwste run bovenaan, oudere runs schuiven omlaag). Per flow: de statusregel,
+    # de aangemaakte/verwerkte objecten en de WARNING/ERROR-gebeurtenissen.
+    param([string]$Path)
+
+    $ts  = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $sb  = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine('================================================================================')
+    [void]$sb.AppendLine("RUN $ts")
+    [void]$sb.AppendLine('================================================================================')
+
+    foreach ($flow in $Global:RunLog.Keys) {
+        $bucket = $Global:RunLog[$flow]
+        $status = if ($Global:FlowStatus.Contains($flow)) { $Global:FlowStatus[$flow] } else { $null }
+
+        [void]$sb.AppendLine('')
+        [void]$sb.AppendLine("--- $flow ---")
+        if ($status) { [void]$sb.AppendLine("Status : $status") }
+
+        if ($bucket.Created.Count -gt 0) {
+            [void]$sb.AppendLine("Aangemaakt/verwerkt ($($bucket.Created.Count)):")
+            foreach ($c in $bucket.Created) { [void]$sb.AppendLine("  + $c") }
+        }
+        if ($bucket.Events.Count -gt 0) {
+            [void]$sb.AppendLine("Waarschuwingen/fouten ($($bucket.Events.Count)):")
+            foreach ($e in $bucket.Events) { [void]$sb.AppendLine("  ! $e") }
+        }
+        if ($bucket.Created.Count -eq 0 -and $bucket.Events.Count -eq 0) {
+            [void]$sb.AppendLine('  (geen bijzonderheden)')
+        }
+    }
+    [void]$sb.AppendLine('')
+
+    $newBlock = $sb.ToString()
+
+    try {
+        $dir = Split-Path -Path $Path -Parent
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+
+        $existing = if (Test-Path $Path) { Get-Content -Path $Path -Raw } else { '' }
+        Set-Content -Path $Path -Value ($newBlock + $existing) -Encoding UTF8 -NoNewline
+    } catch {
+        Write-Host "[Write-RunLogFile] Kon $Path niet schrijven: $($_.Exception.Message)" -ForegroundColor Red
+    }
 }
 
 function ConvertTo-ConfigBool {
@@ -1150,10 +1253,18 @@ try {
     Write-Log INFO "$($CategoryParentMap.Count) SB-categorie(ën) opgehaald voor hoofdcategorie-herleiding"
 
 
+    # Zorg dat de vier flow-blokken in vaste volgorde (F1..F4) in log.txt komen,
+    # ongeacht welke flow als eerste een gebeurtenis of aangemaakt object logt.
+    Get-FlowLogBucket -Flow $Global:FlowLabel.F1 | Out-Null
+    Get-FlowLogBucket -Flow $Global:FlowLabel.F2 | Out-Null
+    Get-FlowLogBucket -Flow $Global:FlowLabel.F3 | Out-Null
+    Get-FlowLogBucket -Flow $Global:FlowLabel.F4 | Out-Null
+
     ####################################################################
     # FLOW 1 — AFAS Forecasts → SalesBuildr Opportunities
     ####################################################################
 
+    $Global:CurrentFlow = $Global:FlowLabel.F1
     if (-not $Flow1Enabled) {
         Write-Log INFO "=== Flow 1 is uitgeschakeld in config.xml (flows/flow1) — overgeslagen ==="
     }
@@ -1245,6 +1356,7 @@ try {
             Write-Log INFO "[Flow 1] Opportunity upsert in SalesBuildr: $ExternalId ('$($Forecast.forecastOmschrijving)')"
             try {
                 Invoke-SalesbuildrUpsertOpportunity -ExternalId $ExternalId -Body $SalesbuildrOpportunity | Out-Null
+                Add-CreatedObject "Opportunity upsert: $ExternalId ('$($Forecast.forecastOmschrijving)')"
             } catch {
                 Write-Log ERROR "[Flow 1] Fout bij upsert Opportunity '$($Forecast.forecastOmschrijving)': $_"
                 $Flow1Complete = $false
@@ -1262,6 +1374,7 @@ try {
     # dus Flow 2 zorgt dat de artikelen bestaan vóór Flow 3 de quotation aanmaakt. Diensten-
     # regels worden hier NIET aangemaakt (die worden in Flow 3 een werksoort- of TXT-regel).
 
+    $Global:CurrentFlow = $Global:FlowLabel.F2
     if (-not $Flow2Enabled) {
         Write-Log INFO "=== Flow 2 is uitgeschakeld in config.xml (flows/flow2) — overgeslagen ==="
     }
@@ -1346,6 +1459,7 @@ try {
             try {
                 New-AfasArtikel -Connector $ConnArtikelenUpdate -ItemCode $ItemCode `
                     -Omschrijving $BronRegel.name -Artikelgroep $Artikelgroep
+                Add-CreatedObject "Artikel: $ItemCode ('$($BronRegel.name)', artikelgroep $Artikelgroep)"
             } catch {
                 Write-Log ERROR "Fout bij aanmaken Artikel [$ItemCode]: $_"
                 $Flow2Complete = $false
@@ -1370,6 +1484,7 @@ try {
     # HELE opportunity overgeslagen — een quotation-regel mag niet naar een niet-bestaand
     # artikel verwijzen; de Forecast blijft open, watermerk vastgehouden voor herkansing.
 
+    $Global:CurrentFlow = $Global:FlowLabel.F3
     if (-not $Flow3Enabled) {
         Write-Log INFO "=== Flow 3 is uitgeschakeld in config.xml (flows/flow3) — overgeslagen ==="
     }
@@ -1558,6 +1673,7 @@ try {
                             -FcNo      $ForecastKey.SqNo `
                             -Ds        $WonQuoteTitles[$OpportunityId] `
                             -Regels    $Regels
+                        Add-CreatedObject "AFAS-quotation: offerte $($ForecastKey.ForecastId) (Forecast SqNo $($ForecastKey.SqNo), $($Regels.Count) regel(s))"
                     } catch {
                         Write-Log ERROR "[$OpportunityId] Fout bij aanmaken AFAS-quotation: $_"
                         $Flow3Complete = $false
@@ -1573,10 +1689,12 @@ try {
                 continue
             }
 
+            $OrAF = Get-SalesbuildrQuoteTotal -Items $Lines
             try {
                 Close-AfasForecast -Connector $ConnForecastUpdate `
                     -PrId $ForecastKey.PrId -SqNo $ForecastKey.SqNo `
-                    -ViOp "G" -OrAF (Get-SalesbuildrQuoteTotal -Items $Lines)
+                    -ViOp "G" -OrAF $OrAF
+                Add-CreatedObject "Forecast gesloten WON (G): PrId $($ForecastKey.PrId) / SqNo $($ForecastKey.SqNo) (OrAF $OrAF)"
             } catch {
                 Write-Log ERROR "[$OpportunityId] Fout bij sluiten Forecast [SqNo $($ForecastKey.SqNo)] als Won (G) in AFAS: $_"
                 $Flow3Complete = $false
@@ -1606,6 +1724,7 @@ try {
 
             try {
                 Close-AfasForecast -Connector $ConnForecastUpdate -PrId $ForecastKey.PrId -SqNo $ForecastKey.SqNo -ViOp "N"
+                Add-CreatedObject "Forecast gesloten LOST (N): PrId $($ForecastKey.PrId) / SqNo $($ForecastKey.SqNo)"
             } catch {
                 Write-Log ERROR "[$OpportunityId] Fout bij sluiten Forecast [SqNo $($ForecastKey.SqNo)] als Lost (N) in AFAS: $_"
                 $Flow3Complete = $false
@@ -1628,6 +1747,7 @@ try {
     # is er nog geen offerte om de PDF aan te koppelen — watermerk vasthouden en later opnieuw
     # proberen. Een Lost-opportunity (geen goedgekeurde quote) is een legitieme no-op.
 
+    $Global:CurrentFlow = $Global:FlowLabel.F4
     if (-not $Flow4Enabled) {
         Write-Log INFO "=== Flow 4 is uitgeschakeld in config.xml (flows/flow4) — overgeslagen ==="
     }
@@ -1711,6 +1831,7 @@ try {
                     -Verkooprelatie   $ForecastKey.PrId `
                     -FileName         $FileName `
                     -FileStreamBase64 $PdfBase64
+                Add-CreatedObject "PDF-bijlage: '$FileName' bij offerte $($ForecastKey.ForecastId) (verkooprelatie $($ForecastKey.PrId))"
             } catch {
                 Write-Log ERROR "[$OpportunityId] Fout bij aanmaken dossieritem (KnSubject): $_"
                 $Flow4Complete = $false
@@ -1736,6 +1857,7 @@ try {
     } else {
         Write-Log WARNING "Flow 1 state NIET bijgewerkt — niet alle Forecasts verwerkt; wordt opnieuw geprobeerd bij volgende run"
     }
+    Set-FlowStatus -Flow $Global:FlowLabel.F1 -Enabled $Flow1Enabled -Complete ($Flow1Enabled -and $Flow1Complete)
 
     If (-not $Flow2Enabled) {
         Write-Log INFO "Flow 2 uitgeschakeld — state ongewijzigd"
@@ -1745,6 +1867,7 @@ try {
     } else {
         Write-Log WARNING "Flow 2 state NIET bijgewerkt — niet alle artikelen aangemaakt; wordt opnieuw geprobeerd bij volgende run"
     }
+    Set-FlowStatus -Flow $Global:FlowLabel.F2 -Enabled $Flow2Enabled -Complete ($Flow2Enabled -and $Flow2Complete)
 
     If (-not $Flow3Enabled) {
         Write-Log INFO "Flow 3 uitgeschakeld — state ongewijzigd"
@@ -1754,6 +1877,7 @@ try {
     } else {
         Write-Log WARNING "Flow 3 state NIET bijgewerkt — niet alle quotations verwerkt; wordt opnieuw geprobeerd bij volgende run"
     }
+    Set-FlowStatus -Flow $Global:FlowLabel.F3 -Enabled $Flow3Enabled -Complete ($Flow3Enabled -and $Flow3Complete)
 
     If (-not $Flow4Enabled) {
         Write-Log INFO "Flow 4 uitgeschakeld — state ongewijzigd"
@@ -1763,9 +1887,15 @@ try {
     } else {
         Write-Log WARNING "Flow 4 state NIET bijgewerkt — niet alle PDF's gekoppeld; wordt opnieuw geprobeerd bij volgende run"
     }
+    Set-FlowStatus -Flow $Global:FlowLabel.F4 -Enabled $Flow4Enabled -Complete ($Flow4Enabled -and $Flow4Complete)
 
 } catch {
     Write-Log ERROR "Fatale fout: $_"
+} finally {
+    # Samenvattend run-logblok wegschrijven (nieuwste bovenaan in logs\log.txt).
+    # In een finally zodat ook een fatale fout of een afgebroken credential-check
+    # (return) nog een blok met de tot dan toe verzamelde WARNING/ERROR's oplevert.
+    Write-RunLogFile -Path "$PSScriptRoot\logs\log.txt"
 }
 
 #endregion

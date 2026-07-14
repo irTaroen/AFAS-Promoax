@@ -1,5 +1,6 @@
 # Runtime state & logs
 ignore/
+logs/
 
 # OS cruft
 .DS_Store
