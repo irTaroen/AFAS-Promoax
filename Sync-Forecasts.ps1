@@ -226,19 +226,16 @@ function Get-SyncWatermark {
 }
 
 function Get-SyncOverrideDays {
-    # Leest de test-override <OverrideDays> uit het state-bestand. Een geheel
-    # getal N betekent: alle flows syncen vanaf N dagen geleden (middernacht
-    # lokale tijd). Leeg/ontbrekend/ongeldig -> $null, dan gelden de eigen watermerken.
+    # Leest de test-override <OverrideDays> uit config.xml (element $Value). Een geheel
+    # getal N betekent: alle flows syncen vanaf N dagen geleden (middernacht lokale tijd).
+    # Leeg/ontbrekend/ongeldig -> $null, dan gelden de eigen watermerken.
     param(
-        [Parameter(Mandatory)] [string] $Path
+        [string] $Value
     )
-    if (-not (Test-Path $Path)) { return $null }
-    $xml  = [xml](Get-Content $Path -Raw)
-    $node = $xml.SelectSingleNode('/SyncDates/OverrideDays')
-    if ($null -eq $node -or [string]::IsNullOrWhiteSpace($node.InnerText)) { return $null }
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
     $days = 0
-    if (-not [int]::TryParse($node.InnerText.Trim(), [ref]$days)) {
-        Write-Log WARNING "OverrideDays bevat geen geldig getal ('$($node.InnerText)') — override genegeerd"
+    if (-not [int]::TryParse($Value.Trim(), [ref]$days)) {
+        Write-Log WARNING "OverrideDays bevat geen geldig getal ('$Value') — override genegeerd"
         return $null
     }
     return $days
@@ -1143,11 +1140,11 @@ try {
     $LastQuotationsSync = Get-SyncWatermark -Path $SyncStateFile -Name 'Flow3'
     $LastAttachmentSync = Get-SyncWatermark -Path $SyncStateFile -Name 'Flow4'
 
-    # Test-override: <OverrideDays>N</OverrideDays> in het state-bestand laat
-    # alle flows syncen vanaf N dagen geleden (middernacht lokale tijd).
-    # De Flow-watermerken worden aan het eind van de run gewoon bijgewerkt;
-    # Set-SyncWatermark laat de OverrideDays-knoop ongemoeid.
-    $OverrideDays = Get-SyncOverrideDays -Path $SyncStateFile
+    # Test-override: <OverrideDays>N</OverrideDays> in config.xml laat alle flows
+    # syncen vanaf N dagen geleden (middernacht lokale tijd). De Flow-watermerken in
+    # LastSyncDates.xml worden aan het eind van de run gewoon bijgewerkt; de override
+    # staat los in config.xml en blijft elke run actief tot hij daar wordt geleegd.
+    $OverrideDays = Get-SyncOverrideDays -Value $config.OverrideDays
     if ($null -ne $OverrideDays) {
         $OverrideDate       = (Get-Date).Date.AddDays(-$OverrideDays)
         $LastForecastSync   = $OverrideDate

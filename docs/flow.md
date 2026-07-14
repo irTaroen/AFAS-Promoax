@@ -20,7 +20,7 @@ Flows 2, 3 and 4 each independently fetch their own batch of closed Opportunitie
   - `Flow3` node → `$LastQuotationsSync`
   - `Flow4` node → `$LastAttachmentSync`
   - Read via `Get-SyncWatermark -Path -Name` (:108-124); a missing file or node defaults to `2026-01-01` local time (`$DefaultDate`), so an initial run pulls everything from that date forward.
-- **OverrideDays test override** (:1043-1055, `Get-SyncOverrideDays` :125-142): if the state file's optional `<OverrideDays>` node contains an integer N, **all four** watermarks above are replaced by N days ago at midnight local time (`(Get-Date).Date.AddDays(-N)`), and a WARNING `"OverrideDays actief (N): alle flows syncen vanaf …"` is logged. Empty/missing node → no override (normal watermarks apply); a non-numeric value logs a WARNING and is ignored. The four Flow watermarks are still written independently at the end of the run as usual, and `Set-SyncWatermark` never touches the `OverrideDays` node — the override stays active (and warns) every run until manually cleared.
+- **OverrideDays test override** (:1043-1055, `Get-SyncOverrideDays -Value` :125-142): if `configs/config.xml`'s top-level `<OverrideDays>` element contains an integer N, **all four** watermarks above are replaced by N days ago at midnight local time (`(Get-Date).Date.AddDays(-N)`), and a WARNING `"OverrideDays actief (N): alle flows syncen vanaf …"` is logged. Empty/missing element → no override (normal watermarks apply); a non-numeric value logs a WARNING and is ignored. The four Flow watermarks are still written independently at the end of the run as usual; the override lives in `config.xml` (not the state file), so it stays active (and warns) every run until manually cleared there.
 - Read credentials straight from the plaintext `configs/config.xml` (:1057-1065) — AFAS token via `$config.SelectSingleNode('afas/token').InnerText` (works with the CDATA block), Salesbuildr API key via `$config.salesbuildr.apikey`. No decryption, no `Configuration.psm1`.
 - Read `<salesbuildr><diensten_maincategory_id>` into `$DienstenMainCatId` (:1067-1072), falling back to the known id `UyOpp42UPGy3LKgSOQGX` when absent/blank — used by `Resolve-AfasLineItem` in Flows 2 and 3 to tell an artikel line from a Diensten (service) line.
 - Read Flow 4's `<afas><kn_subject_stid>` / `<kn_subject_usid>` into `$KnSubjectStId` / `$KnSubjectUsId` (:1074-1078), falling back to `46` / `53307._sa_salesbldr` when absent.
@@ -136,7 +136,7 @@ Flow 2 only acts on `Kind = 'artikel'` results (creates missing articles). Flow 
   - `$Flow2Complete` → `Set-SyncWatermark -Name 'Flow2'` (:1737-1739).
   - `$Flow3Complete` → `Set-SyncWatermark -Name 'Flow3'` (:1746-1748).
   - `$Flow4Complete` → `Set-SyncWatermark -Name 'Flow4'` (:1755-1757).
-- `Set-SyncWatermark` (:144-160) touches only its own node (round-trip `'o'` format) — the other flows' nodes and the `OverrideDays` node are left as-is. An active OverrideDays override therefore survives every run until manually cleared.
+- `Set-SyncWatermark` (:144-160) touches only its own node (round-trip `'o'` format) — the other flows' nodes are left as-is. The `OverrideDays` override lives in `configs/config.xml`, a separate file `Set-SyncWatermark` never touches, so it survives every run until manually cleared there.
 - If a flag is false, the date is held so the next run retries the unprocessed records.
 
 ## Error handling (lines 1765–1767)
