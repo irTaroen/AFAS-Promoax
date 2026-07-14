@@ -7,10 +7,20 @@
     Flow 1: Gewijzigde Forecasts in AFAS → Upsert als Opportunity in SalesBuildr
             (gesloten Opportunities worden overgeslagen)
 
-    Flow 2: Gesloten Opportunities in SalesBuildr → Voorcalculatieregel aanmaken in AFAS
-            - Quotation-regels worden als Voorcalculatieregel-regels toegevoegd
-            - Ontbrekende Artikels worden eerst aangemaakt in AFAS
+    Flow 2: Items — gewonnen SalesBuildr-quotations → ontbrekende Items (artikelen) in AFAS
+            - Voor Won-Opportunities worden ontbrekende artikelen (FbItemArticle) aangemaakt
+            - Voorbereidende stap voor Flow 3 (een quotation-regel mag niet naar een
+              niet-bestaand artikel verwijzen)
+
+    Flow 3: Quotations — gewonnen SalesBuildr-quotations → AFAS-quotation (voorcalculatie)
+            - Won: AFAS-quotation (KnQuotation) aanmaken + Forecast sluiten (G)
+            - Lost: alleen de Forecast sluiten (N)
             - Idempotentie via external ID check in AFAS
+
+    Flow 4: SalesBuildr quote-PDF → AFAS dossieritem (KnSubject)
+            - Voor Won-Opportunities wordt de SB-quote-PDF als bijlage bij de
+              AFAS-quotation gehangen
+            - Idempotentie via Salesbuildr_Dossieritems (bijlage al aanwezig?)
 
 .NOTES
     File Name   : Sync-Forecasts.ps1
@@ -24,6 +34,11 @@
         v0.3 [2026-07-06] : Config/mapping/state naar configs\; cleanup: dode code
                             verwijderd, externalIdentifier-parse ontdubbeld, stappen
                             hernummerd
+        v0.4 [2026-07-14] : Flow 3 toegevoegd — SB quote-PDF → AFAS dossieritem
+                            (KnSubject), idempotent via Salesbuildr_Dossieritems
+        v0.5 [2026-07-14] : Flow 2 gesplitst in Flow 2 (Items) + Flow 3 (Quotations);
+                            PDF-flow hernummerd naar Flow 4; gedeelde helper
+                            Split-ClosedOpportunities; aparte config-toggle per flow
 #>
 
 [CmdletBinding()]param()
@@ -55,7 +70,7 @@ function Write-Log {
 function ConvertTo-ConfigBool {
     # Parseert een config.xml-waarde naar [bool]. Herkent true/1/yes/ja/on en
     # false/0/no/nee/off (hoofdletterongevoelig). Leeg, ontbrekend of onbekend
-    # -> $Default (zodat een oudere config zonder <flows> beide flows aan laat).
+    # -> $Default (zodat een oudere config zonder <flows> alle flows aan laat).
     param(
         [string]$Value,
         [bool]$Default = $true
@@ -109,8 +124,8 @@ function Get-SyncWatermark {
 
 function Get-SyncOverrideDays {
     # Leest de test-override <OverrideDays> uit het state-bestand. Een geheel
-    # getal N betekent: beide flows syncen vanaf N dagen geleden (middernacht
-    # lokale tijd). Leeg/ontbrekend/ongeldig -> $null, dan gelden Flow1/Flow2.
+    # getal N betekent: alle flows syncen vanaf N dagen geleden (middernacht
+    # lokale tijd). Leeg/ontbrekend/ongeldig -> $null, dan gelden de eigen watermerken.
     param(
         [Parameter(Mandatory)] [string] $Path
     )
@@ -160,6 +175,19 @@ function Connect-Afas {
     $Global:AfasRestUrl = "https://$($Omgeving).$subdomain.afas.online/profitrestservices"
     $encoded            = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes($ApiToken))
     $Global:AfasHeaders = @{ Authorization = "AfasToken $encoded" }
+}
+
+function Test-AfasConnection {
+    # Valideert het AFAS-token met een lichte GET op /metainfo (geen connector nodig).
+    # Geeft $true bij succes, $false bij HTTP 401 (ongeldig/verlopen token). Andere
+    # fouten (netwerk, 5xx, ...) bubbelen door naar de aanroeper.
+    try {
+        Invoke-RestMethod -Uri "$($Global:AfasRestUrl)/metainfo" -Headers $Global:AfasHeaders -Method Get | Out-Null
+        return $true
+    } catch {
+        if ($_.Exception.Response.StatusCode -eq 401) { return $false }
+        throw
+    }
 }
 
 function Invoke-AfasGetConnectorFiltered {
@@ -228,6 +256,30 @@ function Get-AfasArtikelByItemCode {
     return $null
 }
 
+function Get-AfasQuotationAttachment {
+    # Controleert of er al een PDF-bijlage (dossieritem) bij een AFAS-quotation hangt,
+    # via de Salesbuildr_Dossieritems GetConnector, server-side gefilterd op
+    # Offerte (= QuId = AFAS forecast-id, operatortypes=1 = gelijk aan). Bevestigde
+    # veldnamen: Type (= dossieritemtype/StId), Ja_Nee (bijlage aanwezig), Offerte,
+    # Verkooprelatie. Een rij met Type == $SubjectType én Ja_Nee == $true betekent dat
+    # de SB-offerte-PDF al als bijlage bestaat -> Flow 4 uploadt hem dan NIET opnieuw
+    # (de KnSubject-POST is niet idempotent). Geeft $true als de bijlage bestaat.
+    param(
+        [string]$Connector,
+        [string]$OfferteNr,     # QuId = AFAS forecast-id, bijv. "11311"
+        [int]$SubjectType       # StId / dossieritemtype (bijv. 46)
+    )
+
+    $url      = "$($Global:AfasRestUrl)/connectors/$($Connector)" +
+                "?filterfieldids=Offerte&filtervalues=$([uri]::EscapeDataString($OfferteNr))&operatortypes=1&skip=0&take=100"
+    $response = Invoke-RestMethod -Uri $url -Headers $Global:AfasHeaders -Method Get
+
+    foreach ($row in $response.rows) {
+        if ([int]$row.Type -eq $SubjectType -and $row.Ja_Nee -eq $true) { return $true }
+    }
+    return $false
+}
+
 function Invoke-AfasUpdateConnector {
     # POST (insert) of PUT (update) naar een AFAS UpdateConnector
     param(
@@ -280,6 +332,66 @@ function New-AfasArtikel {
     Invoke-AfasUpdateConnector -Connector $Connector -Body $body
 }
 
+function New-AfasSubjectAttachment {
+    # Maakt een dossieritem (KnSubject) in AFAS met de SB-offerte-PDF als bijlage
+    # (Flow 4). Het dossieritem wordt via KnSubjectLink aan de verkooprelatie + offerte
+    # gekoppeld (SfTp=4 vast, ToSR=true). De PDF gaat als Base64 mee in
+    # KnSubjectAttachment.FileStream, met FileName incl. extensie.
+    #   StId = dossieritemtype (uit config, bijv. 46)
+    #   UsId = AFAS-gebruiker (uit config, bijv. "53307._sa_salesbldr")
+    #   Da   = huidige datum/tijd (yyyy-MM-ddTHH:mm)
+    #   KnSubjectLink.QuId = AFAS forecast-id (= Offerte), SfId = verkooprelatie
+    param(
+        [string]$Connector,
+        [int]$SubjectType,          # StId / dossieritemtype (bijv. 46)
+        [string]$UserId,            # UsId — AFAS-gebruiker
+        [string]$ForecastId,        # QuId = AFAS forecast-id (KnSubjectLink.QuId)
+        [string]$Verkooprelatie,    # SfId — verkooprelatie
+        [string]$FileName,          # bestandsnaam incl. extensie (bijv. "SB-Offerte-11311.pdf")
+        [string]$FileStreamBase64   # Base64 van de PDF-bytes
+    )
+
+    $body = @{
+        KnSubject = @{
+            Element = @{
+                Fields = @{
+                    StId = $SubjectType
+                    Ds   = "SB Offerte - $ForecastId"
+                    Da   = (Get-Date -Format "yyyy-MM-ddTHH:mm")
+                    UsId = $UserId
+                }
+                Objects = @(
+                    @{
+                        KnSubjectLink = @{
+                            Element = @{
+                                Fields = @{
+                                    ToSR = $true
+                                    SfTp = 4
+                                    SfId = $Verkooprelatie
+                                    QuId = $ForecastId
+                                }
+                            }
+                        }
+                    },
+                    @{
+                        KnSubjectAttachment = @{
+                            Element = @{
+                                Fields = @{
+                                    FileName   = $FileName
+                                    FileStream = $FileStreamBase64
+                                }
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    Write-Log INFO "Dossieritem (KnSubject) aanmaken in AFAS: '$FileName' bij offerte $ForecastId / verkooprelatie $Verkooprelatie"
+    Invoke-AfasUpdateConnector -Connector $Connector -Body $body
+}
+
 function Get-SalesbuildrMainCategoryId {
     # Herleidt een SB-(sub)categorie naar zijn HOOFDcategorie (de wortel: de categorie
     # zonder — of met onbekende — parent), door via parentCategoryId omhoog te lopen.
@@ -316,7 +428,7 @@ function Get-AfasArtikelgroep {
     # regel-categorie wordt eerst via de SB-categorieboom naar zijn hoofdcategorie
     # herleid ($CategoryParentMap) en die hoofdcategorie-id in $ArtikelgroepMap opgezocht.
     # Geeft $null als de categorie ontbreekt, niet naar een hoofdcategorie te herleiden
-    # is, of (nog) niet gemapt is — de aanroeper slaat het artikel dan over (Flow 2 stap 2b).
+    # is, of (nog) niet gemapt is — de aanroeper slaat het artikel dan over (Flow 2 — Items).
     param(
         $Category,                       # SB category-object ({ id, name, ... }) of $null
         [hashtable]$ArtikelgroepMap,     # hoofdcategorie.id -> Grp
@@ -522,6 +634,19 @@ function Invoke-SalesbuildrRequest {
     return $response.Content | ConvertFrom-Json
 }
 
+function Test-SalesbuildrConnection {
+    # Valideert de SalesBuildr API-key met een lichte GET (één opportunity). Geeft
+    # $true bij succes, $false bij HTTP 401 (ongeldige API-key). Andere fouten
+    # (netwerk, 5xx, ...) bubbelen door naar de aanroeper.
+    try {
+        Invoke-SalesbuildrRequest -Uri "$($Global:SalesbuildrUri)/public-api/opportunity?size=1" | Out-Null
+        return $true
+    } catch {
+        if ($_.Exception.Response.StatusCode -eq 401) { return $false }
+        throw
+    }
+}
+
 function Get-SalesbuildrCategoryParentMap {
     # Haalt alle SB-categorieën op (GET /public-api/category, platte lijst met
     # parentCategoryId) en bouwt een map category.id -> parentCategoryId (leeg voor
@@ -654,6 +779,104 @@ function Get-SalesbuildrPrimaryQuote {
     return $quotes | Where-Object { $_.primary -eq $true } | Select-Object -First 1
 }
 
+function Get-SalesbuildrQuotePdf {
+    # Haalt de PDF van een SB-quote op (GET /public-api/quote/{id}/pdf) en geeft die
+    # als Base64-string terug (voor AFAS KnSubjectAttachment.FileStream, Flow 4).
+    # LET OP: dit is BINAIRE data — Invoke-SalesbuildrRequest doet ConvertFrom-Json en
+    # zou de bytes corrumperen, dus hier rechtstreeks Invoke-WebRequest. We lezen
+    # RawContentStream (een MemoryStream met de ruwe bytes) — dat werkt betrouwbaar in
+    # zowel Windows PowerShell 5.1 als PowerShell 7. Geeft $null als de quote geen PDF
+    # heeft (HTTP 404) of de respons leeg is.
+    param([string]$QuoteId)
+
+    try {
+        $response = Invoke-WebRequest `
+            -Uri "$($Global:SalesbuildrUri)/public-api/quote/$QuoteId/pdf" `
+            -Headers $Global:SalesbuildrHeaders -Method Get
+    } catch {
+        if ($_.Exception.Response.StatusCode -eq 404) {
+            Write-Log WARNING "Geen PDF gevonden voor SB-quote $QuoteId (HTTP 404)"
+            return $null
+        }
+        throw
+    }
+
+    $bytes = $response.RawContentStream.ToArray()
+    if ($null -eq $bytes -or $bytes.Length -eq 0) {
+        Write-Log WARNING "Lege PDF-respons voor SB-quote $QuoteId"
+        return $null
+    }
+    return [System.Convert]::ToBase64String($bytes)
+}
+
+function Split-ClosedOpportunities {
+    # Categoriseert gesloten Opportunities als Won of Lost op basis van UITSLUITEND de
+    # primaire quote (primary:true). Gedeeld door Flow 2 (Items), Flow 3 (Quotations) en
+    # Flow 4 (PDF) zodat alle drie exact dezelfde Won/Lost-bepaling + quote-regels gebruiken.
+    #
+    #   Won  : opportunity closed  +  primaire quote status == 'approved'
+    #   Lost : opportunity closed  +  geen primaire quote, of status != 'approved'
+    #
+    # Een ontbrekende/niet-goedgekeurde quote is GEEN fout — het is een geldige Lost-uitkomst.
+    # Een écht mislukte quote-fetch (netwerk/API) zet AllOk = $false; de aanroeper houdt dan
+    # zijn watermerk vast en probeert de hele batch later opnieuw.
+    #
+    # Geeft terug:
+    #   Won    : array Opportunities met goedgekeurde primaire quote
+    #   Lost   : array overige gesloten Opportunities
+    #   Lines  : @{ opportunityId -> quote-items }   (alleen Won)
+    #   Titles : @{ opportunityId -> quote.title }   (alleen Won)
+    #   Quotes : @{ opportunityId -> primaire quote } (alleen Won; voor o.a. quote.id in Flow 4)
+    #   AllOk  : $false als een quote-fetch faalde
+    param(
+        [array]$Opportunities,
+        [string]$LogPrefix        # bijv. "Flow 2" / "Flow 3" / "Flow 4"
+    )
+
+    $Won    = @()
+    $Lost   = @()
+    $Lines  = @{}
+    $Titles = @{}
+    $Quotes = @{}
+    $AllOk  = $true
+
+    foreach ($Opportunity in $Opportunities) {
+        $OpportunityId = $Opportunity.id
+        Write-Log INFO "[$LogPrefix] Opportunity $OpportunityId | externalId $($Opportunity.externalIdentifier)"
+
+        # Primaire quote via de quote-endpoint gefilterd op opportunity.id (OpportunityResponseDto
+        # heeft geen quoteId-veld — dit is de enige manier).
+        try {
+            $Quote = Get-SalesbuildrPrimaryQuote -OpportunityId $OpportunityId
+        } catch {
+            Write-Log ERROR "[$OpportunityId] Fout bij ophalen primaire quote: $_"
+            $AllOk = $false
+            continue
+        }
+
+        if ($null -ne $Quote) {
+            Write-Log INFO "[$LogPrefix] Quote $($Quote.id) (nr $($Quote.number)) | status '$($Quote.status)' | klant '$($Quote.company.name)'"
+        }
+
+        if ($null -ne $Quote -and $Quote.status -eq 'approved') {
+            # Bevestigd veldnaam: items (QuoteResponseDto) — NIET 'lines'
+            $Lines[$OpportunityId]  = $Quote.items
+            $Titles[$OpportunityId] = $Quote.title
+            $Quotes[$OpportunityId] = $Quote
+            $Won += $Opportunity
+            Write-Log INFO "[$OpportunityId] WON — primaire quote 'approved' ($($Quote.items.Count) regel(s))"
+        } else {
+            $Reden = if ($null -eq $Quote) { "geen primaire quote" } else { "primaire quote status = '$($Quote.status)'" }
+            $Lost += $Opportunity
+            Write-Log INFO "[$OpportunityId] LOST — $Reden"
+        }
+    }
+
+    return [pscustomobject]@{
+        Won = $Won; Lost = $Lost; Lines = $Lines; Titles = $Titles; Quotes = $Quotes; AllOk = $AllOk
+    }
+}
+
 function Get-SalesbuildrProductById {
     # Haalt één product op via GET /public-api/product/{id} (levert een
     # ProductResponseDto, incl. customFields). Resultaten worden gecachet omdat
@@ -733,7 +956,7 @@ function Resolve-AfasLineItem {
     #   - mpn aanwezig                          -> ItCd = mpn, VaIt = "2" (artikel)
     #   - geen mpn, hoofdcategorie = 'Diensten' -> Kind = 'diensten', ItCd = internalProductId
     #     (mag leeg zijn); of de regel een werksoort (VaIt=1) of een TXT-regel wordt, hangt af
-    #     van of internalProductId in AFAS bestaat — dat wordt LATER (stap 2b/2c) bepaald,
+    #     van of internalProductId in AFAS bestaat — dat wordt LATER (Flow 3, stap 3b/3c) bepaald,
     #     zodat de bestaanscontrole per unieke code kan worden ge-dedupliceerd.
     #   - geen van beide                        -> $null (regel is niet naar AFAS te mappen)
     # Diensten-items worden NOOIT in AFAS aangemaakt: bestaat internalProductId in AFAS dan
@@ -807,23 +1030,28 @@ try {
 
     $config = (Read-XMLConfig -Path "$PSScriptRoot\configs\config.xml").configuration
 
-    # State: beide flow-watermerken staan in één bestand (Flow1 = Forecasts,
-    # Flow2 = Opportunities). Zie Get-/Set-SyncWatermark.
+    # State: alle vier flow-watermerken staan als aparte knopen in één bestand.
+    #   Flow1 = Forecasts, Flow2 = Items, Flow3 = Quotations, Flow4 = PDF/dossieritems.
+    # Zie Get-/Set-SyncWatermark.
     $SyncStateFile = "$PSScriptRoot\configs\LastSyncDates.xml"
 
-    $LastForecastSync    = Get-SyncWatermark -Path $SyncStateFile -Name 'Flow1'
-    $LastOpportunitySync = Get-SyncWatermark -Path $SyncStateFile -Name 'Flow2'
+    $LastForecastSync   = Get-SyncWatermark -Path $SyncStateFile -Name 'Flow1'
+    $LastItemsSync      = Get-SyncWatermark -Path $SyncStateFile -Name 'Flow2'
+    $LastQuotationsSync = Get-SyncWatermark -Path $SyncStateFile -Name 'Flow3'
+    $LastAttachmentSync = Get-SyncWatermark -Path $SyncStateFile -Name 'Flow4'
 
     # Test-override: <OverrideDays>N</OverrideDays> in het state-bestand laat
-    # beide flows syncen vanaf N dagen geleden (middernacht lokale tijd).
-    # De Flow1/Flow2-watermerken worden aan het eind van de run gewoon
-    # bijgewerkt; Set-SyncWatermark laat de OverrideDays-knoop ongemoeid.
+    # alle flows syncen vanaf N dagen geleden (middernacht lokale tijd).
+    # De Flow-watermerken worden aan het eind van de run gewoon bijgewerkt;
+    # Set-SyncWatermark laat de OverrideDays-knoop ongemoeid.
     $OverrideDays = Get-SyncOverrideDays -Path $SyncStateFile
     if ($null -ne $OverrideDays) {
-        $OverrideDate        = (Get-Date).Date.AddDays(-$OverrideDays)
-        $LastForecastSync    = $OverrideDate
-        $LastOpportunitySync = $OverrideDate
-        Write-Log WARNING "OverrideDays actief ($OverrideDays): beide flows syncen vanaf $($OverrideDate.ToString('o'))"
+        $OverrideDate       = (Get-Date).Date.AddDays(-$OverrideDays)
+        $LastForecastSync   = $OverrideDate
+        $LastItemsSync      = $OverrideDate
+        $LastQuotationsSync = $OverrideDate
+        $LastAttachmentSync = $OverrideDate
+        Write-Log WARNING "OverrideDays actief ($OverrideDays): alle flows syncen vanaf $($OverrideDate.ToString('o'))"
     }
 
     # Credentials, omgeving en MODE komen plaintext uit config.xml.
@@ -843,9 +1071,21 @@ try {
     $DienstenMainCatId = $config.salesbuildr.diensten_maincategory_id
     if ([string]::IsNullOrWhiteSpace($DienstenMainCatId)) { $DienstenMainCatId = 'UyOpp42UPGy3LKgSOQGX' }
 
-    # Flow-schakelaars uit config.xml (<flows><flow1>/<flow2>). Ontbrekend -> aan.
+    # Flow 4 (SB quote-PDF -> AFAS dossieritem): het dossieritemtype (KnSubject.StId) en de
+    # AFAS-gebruiker (KnSubject.UsId) komen uit config zodat ze aanpasbaar zijn; ontbrekend
+    # -> bekende defaults, zodat bestaande configs zonder deze sleutels blijven werken.
+    $KnSubjectStId = if ([string]::IsNullOrWhiteSpace($config.afas.kn_subject_stid)) { 46 } else { [int]$config.afas.kn_subject_stid }
+    $KnSubjectUsId = if ([string]::IsNullOrWhiteSpace($config.afas.kn_subject_usid)) { '53307._sa_salesbldr' } else { $config.afas.kn_subject_usid }
+
+    # Flow-schakelaars uit config.xml (<flows><flow1>..<flow4>). Ontbrekend -> aan.
+    #   flow1 = Forecasts -> Opportunities
+    #   flow2 = Items       (gewonnen quotations -> ontbrekende artikelen in AFAS)
+    #   flow3 = Quotations  (gewonnen quotations -> AFAS-quotation + Forecast sluiten)
+    #   flow4 = PDF         (SB quote-PDF -> AFAS dossieritem)
     $Flow1Enabled = ConvertTo-ConfigBool -Value $config.flows.flow1 -Default $true
     $Flow2Enabled = ConvertTo-ConfigBool -Value $config.flows.flow2 -Default $true
+    $Flow3Enabled = ConvertTo-ConfigBool -Value $config.flows.flow3 -Default $true
+    $Flow4Enabled = ConvertTo-ConfigBool -Value $config.flows.flow4 -Default $true
 
     foreach ($entry in @{ 'afas.omgeving'      = $AfasOmgeving
                           'afas.token'         = $AfasApiToken
@@ -859,6 +1099,21 @@ try {
     Connect-Afas        -Omgeving $AfasOmgeving -ApiToken $AfasApiToken -Mode $Mode
     Connect-Salesbuildr -Uri $SalesbuildrUrl -ApiKey $SalesbuildrApiKey
 
+    # Credential-check: een lichte GET tegen beide API's. Een HTTP 401 betekent een
+    # ongeldig/verlopen AFAS-token of SalesBuildr API-key — doorgaan heeft dan geen
+    # zin (elke vervolg-call zou ook 401'en), dus loggen we een waarschuwing en
+    # stoppen de run. Beide worden gecontroleerd zodat je in één run beide fouten ziet.
+    $CredentialsOk = $true
+    if (-not (Test-AfasConnection)) {
+        Write-Log WARNING "AFAS-token ongeldig (HTTP 401) — controleer afas/token in config.xml; sync afgebroken"
+        $CredentialsOk = $false
+    }
+    if (-not (Test-SalesbuildrConnection)) {
+        Write-Log WARNING "SalesBuildr API-key ongeldig (HTTP 401) — controleer salesbuildr/apikey in config.xml; sync afgebroken"
+        $CredentialsOk = $false
+    }
+    if (-not $CredentialsOk) { return }
+
     # AFAS connector namen uit config
     $ConnForecastGet    = $config.afas.connectors.forecasts_get        # Salesbuildr_Forecasts
     $ConnForecastUpdate = $config.afas.connectors.forecasts_update     # CmForecast
@@ -866,14 +1121,17 @@ try {
     $ConnArtikelenUpdate = $config.afas.connectors.artikelen_update    # FbItemArticle
     $ConnVoorcalcGet    = $config.afas.connectors.voorcalculatie_get   # Salesbuildr_Voorcalculatie
     $ConnVoorcalcUpdate = $config.afas.connectors.voorcalculatie_update # KnQuotation
+    # Flow 4 — dossieritems; fallback op de bekende namen zodat oudere configs blijven werken.
+    $ConnDossierGet     = if ([string]::IsNullOrWhiteSpace($config.afas.connectors.dossieritems_get)) { 'Salesbuildr_Dossieritems' } else { $config.afas.connectors.dossieritems_get }  # Salesbuildr_Dossieritems
+    $ConnSubjectUpdate  = if ([string]::IsNullOrWhiteSpace($config.afas.connectors.subject_update)) { 'KnSubject' } else { $config.afas.connectors.subject_update }  # KnSubject
 
     # Mapping SalesBuildr HOOFDcategorie -> AFAS artikelgroep (Grp), uit
     # mapping-artikelgroepen.xml. Alleen hoofdcategorieën worden gemapt: een quote-regel
     # draagt een (sub)categorie, die wordt via de SB-categorieboom eerst naar zijn
     # hoofdcategorie herleid (zie $CategoryParentMap hieronder). Alleen hoofdcategorieën
     # met een ingevulde AFAS-id worden opgenomen; een (nog) niet gemapte hoofdcategorie
-    # ontbreekt in de map en laat stap 2b het artikel overslaan. Gebruikt in Flow 2
-    # stap 2b bij het aanmaken van ontbrekende artikels.
+    # ontbreekt in de map en laat Flow 2 het artikel overslaan. Gebruikt in Flow 2 (Items)
+    # bij het aanmaken van ontbrekende artikels.
     $ArtikelgroepMap     = @{}   # SB hoofdcategorie.id -> AFAS artikelgroep-code (Grp)
     $ArtikelgroepNaamMap = @{}   # SB hoofdcategorie.id -> AFAS artikelgroep-omschrijving (naam, alleen voor logging)
     $MappingXml = [xml](Get-Content "$PSScriptRoot\configs\mapping-artikelgroepen.xml" -Raw)
@@ -995,169 +1253,60 @@ try {
     }
 
     ####################################################################
-    # FLOW 2 — Gesloten SalesBuildr Opportunities → AFAS Voorcalculatieregels
+    # FLOW 2 — Items: gewonnen SB-quotations → ontbrekende Items (artikelen) in AFAS
     ####################################################################
+    #
+    # Voorbereidende stap voor Flow 3 (Quotations): voor elke gewonnen (approved primaire
+    # quote) gesloten Opportunity worden de ontbrekende artikelen (FbItemArticle) in AFAS
+    # aangemaakt. Een AFAS-quotation-regel mag niet naar een niet-bestaand artikel verwijzen,
+    # dus Flow 2 zorgt dat de artikelen bestaan vóór Flow 3 de quotation aanmaakt. Diensten-
+    # regels worden hier NIET aangemaakt (die worden in Flow 3 een werksoort- of TXT-regel).
 
     if (-not $Flow2Enabled) {
         Write-Log INFO "=== Flow 2 is uitgeschakeld in config.xml (flows/flow2) — overgeslagen ==="
     }
     else {
-        Write-Log INFO "=== Flow 2: Gesloten Opportunities → AFAS Voorcalculatieregels ==="
-        Write-Log INFO "Delta sinds: $LastOpportunitySync"
+        Write-Log INFO "=== Flow 2: Items — gewonnen SB-quotations → AFAS-artikelen ==="
+        Write-Log INFO "Delta sinds: $LastItemsSync"
 
-        $ClosedOpportunities = Get-SalesbuildrClosedOpportunities -SinceDate $LastOpportunitySync
-
+        $ClosedOpportunities = Get-SalesbuildrClosedOpportunities -SinceDate $LastItemsSync
         Write-Log INFO "$($ClosedOpportunities.Count) gesloten Opportunities gevonden"
 
         # Batch-watermark voor Flow 2 (zie toelichting bij Flow 1).
         $Flow2Complete = $true
 
         # ── AFAS-schrijfacties (veiligheidsschakelaar) ──
-        # $false (standaard): Flow 2 schrijft volledig naar AFAS — artikels (FbItemArticle),
-        # AFAS-quotation (KnQuotation) én Forecast-sluiting (CmForecast, G/N). Zet op $true om
-        # Flow 2 tijdelijk ON HOLD te zetten (alleen ophalen + categoriseren, geen writes); het
+        # $false (standaard): Flow 2 maakt ontbrekende artikelen aan (FbItemArticle). Zet op
+        # $true om Flow 2 ON HOLD te zetten (alleen ophalen + inspectie, geen writes); het
         # watermerk schuift dan bewust NIET op zodat dezelfde Opportunities later opnieuw
         # verwerkt worden.
-        $AfasWritesOnHold = $false
-        if ($AfasWritesOnHold) {
-            Write-Log WARNING "Flow 2: AFAS-schrijfacties staan ON HOLD — geen artikels/quotations/Forecast-updates; alleen ophalen + inspectie. Watermerk wordt niet opgeschoven."
+        $AfasWritesOnHold2 = $false
+        if ($AfasWritesOnHold2) {
+            Write-Log WARNING "Flow 2: AFAS-schrijfacties staan ON HOLD — geen artikelen aangemaakt. Watermerk wordt niet opgeschoven."
             $Flow2Complete = $false
         }
 
-        # ── Stap 2a: Categoriseer elke gesloten Opportunity als Won of Lost ──
-        #
-        # De verkoopstatus van de originating AFAS Forecast (CmForecast.ViOp) én de vraag
-        # of we artikels + voorcalculatie moeten aanmaken, hangen volledig af van deze
-        # tweedeling. Bepalend is UITSLUITEND de PRIMAIRE quote (primary:true):
-        #
-        #   Won  (ViOp=G): opportunity closed  +  primaire quote status == 'approved'
-        #                  → artikels aanmaken, voorcalculatie aanmaken, Forecast sluiten (G)
-        #   Lost (ViOp=N): opportunity closed  +  geen primaire quote, of status != 'approved'
-        #                  → GEEN artikels/voorcalc; alleen de Forecast sluiten (N)
-        #
-        # Een ontbrekende quote is dus GEEN fout meer (was voorheen een skip die het
-        # watermerk vasthield): het is een geldige Lost-uitkomst die het watermerk laat
-        # opschuiven zodra de Forecast succesvol op N is gezet.
+        # Categoriseer Won/Lost (gedeelde helper). Alleen Won-quotations bevatten regels
+        # waarvoor artikelen aangemaakt moeten worden; Lost is een no-op voor Flow 2.
+        $Outcome = Split-ClosedOpportunities -Opportunities $ClosedOpportunities -LogPrefix "Flow 2"
+        if (-not $Outcome.AllOk) { $Flow2Complete = $false }
+        Write-Log INFO "Categorisatie: $($Outcome.Won.Count) Won, $($Outcome.Lost.Count) Lost"
 
-        $WonOpportunities  = @()   # opps met een goedgekeurde primaire quote (ViOp=G)
-        $LostOpportunities = @()   # opps zonder goedgekeurde primaire quote (ViOp=N)
-        $WonQuoteLines     = @{}   # OpportunityId → array van quote-regels (alleen Won)
-        $WonQuoteTitles    = @{}   # OpportunityId → SB-quote title (→ KnQuotation.Ds)
-
-        foreach ($Opportunity in $ClosedOpportunities) {
-            # Bevestigd veldnaam: id (OpportunityResponseDto)
-            $OpportunityId = $Opportunity.id
-            Write-Log INFO "[Flow 2] Opportunity $OpportunityId | externalId $($Opportunity.externalIdentifier)"
-
-            # Haal de primaire quote op via de quote-endpoint gefilterd op opportunity.id.
-            # OpportunityResponseDto heeft geen quoteId-veld — dit is de enige manier.
-            try {
-                $Quote = Get-SalesbuildrPrimaryQuote -OpportunityId $OpportunityId
-            } catch {
-                # Netwerk-/API-fout: échte fout, houd het watermerk vast en probeer opnieuw.
-                Write-Log ERROR "[$OpportunityId] Fout bij ophalen primaire quote: $_"
-                $Flow2Complete = $false
-                continue
-            }
-
-            if ($null -ne $Quote) {
-                Write-Log INFO "[Flow 2] Quote $($Quote.id) (nr $($Quote.number)) | status '$($Quote.status)' | klant '$($Quote.company.name)'"
-            }
-
-            # ── Inspectie: alle beschikbare velden per quote-item dumpen (tijdelijk uit) ──
-            # Diagnostische data-dump per quote-regel. Uitgecommentarieerd nu de per-regel
-            # data in kaart is; her-inschakelen voor debugging door het blok te ontcommentariëren.
-            <#
-            if ($null -ne $Quote -and $Quote.items) {
-                Write-Log INFO "[$OpportunityId] Quote-items ($($Quote.items.Count)) — data-dump ter inspectie:"
-                $ItemIndex = 0
-                foreach ($InspectItem in $Quote.items) {
-                    $ItemIndex++
-                    $Blok = [System.Text.StringBuilder]::new()
-                    [void]$Blok.AppendLine("  ┌─ item $ItemIndex/$($Quote.items.Count) " + ('─' * 40))
-                    foreach ($Veld in $InspectItem.PSObject.Properties) {
-                        $Waarde = $Veld.Value
-                        if ($Waarde -is [System.Management.Automation.PSCustomObject]) {
-                            [void]$Blok.AppendLine(("  │ {0,-20} :" -f $Veld.Name))
-                            foreach ($SubVeld in $Waarde.PSObject.Properties) {
-                                [void]$Blok.AppendLine(("  │   {0,-18} : {1}" -f $SubVeld.Name, $SubVeld.Value))
-                            }
-                        }
-                        else {
-                            [void]$Blok.AppendLine(("  │ {0,-20} : {1}" -f $Veld.Name, $Waarde))
-                        }
-                    }
-                    [void]$Blok.Append("  └" + ('─' * 48))
-                    Write-Log INFO $Blok.ToString()
-                }
-            }
-            #>
-
-            if ($null -ne $Quote -and $Quote.status -eq 'approved') {
-                # ── Won ──
-                # Bevestigd veldnaam: items (QuoteResponseDto) — NIET 'lines'
-                $Lines = $Quote.items
-                $WonQuoteLines[$OpportunityId]  = $Lines
-                $WonQuoteTitles[$OpportunityId] = $Quote.title
-                $WonOpportunities += $Opportunity
-
-                Write-Log INFO "[$OpportunityId] WON — primaire quote 'approved' ($($Lines.Count) regel(s)); artikels + voorcalc + Forecast sluiten (G)"
-            } else {
-                # ── Lost ──
-                $Reden = if ($null -eq $Quote) { "geen primaire quote" } else { "primaire quote status = '$($Quote.status)'" }
-                $LostOpportunities += $Opportunity
-
-                Write-Log INFO "[$OpportunityId] LOST — $Reden; alleen Forecast sluiten (N)"
-            }
-        }
-
-        Write-Log INFO "Categorisatie: $($WonOpportunities.Count) Won (G), $($LostOpportunities.Count) Lost (N)"
-
-        # ── Stap 2b: Regels resolven + ontbrekende Artikels aanmaken (alleen Won) ──
-
-        # Alle quote-regels over alle Won-quotations, plat geslagen.
-        $AllWonLines = @($WonQuoteLines.Values | ForEach-Object { $_ })
-
-        # Resolve elke regel naar een AFAS-itemcode (ItCd) + regeltype (VaIt):
-        #   mpn aanwezig                 -> ItCd = mpn, VaIt = "2" (artikel) -> aanmaken indien afwezig
-        #   geen mpn, hoofdcat Diensten  -> Kind = 'diensten', ItCd = internalProductId (mag leeg);
-        #                                   werksoort (bestaat in AFAS) of TXT-regel (bestaat niet) -> zie 2b/2c
-        #   geen van beide               -> onmapbare regel -> hele opportunity vasthouden (zie 2c)
-        # De resolutie per regel (op quote-item-id) wordt in stap 2c hergebruikt.
+        # Alle Won-regels, plat geslagen; resolve elke regel naar itemcode (ItCd) + type (VaIt).
+        $AllWonLines = @($Outcome.Lines.Values | ForEach-Object { $_ })
         $LineResolution = @{}
         foreach ($Line in $AllWonLines) {
             $LineResolution[$Line.id] = Resolve-AfasLineItem -Line $Line `
                 -CategoryParentMap $CategoryParentMap -DienstenMainCategoryId $DienstenMainCatId
         }
 
-        # Itemcodes die niet in AFAS beschikbaar zijn (ontbrekende artikelgroep-mapping of
-        # een fout bij aanmaken van een artikel) -> in stap 2c wordt de HELE opportunity
-        # overgeslagen (anders wijst de voorcalc-regel naar een niet-bestaand item) en blijft
-        # de Forecast open. Zie de skip-logica in stap 2c. Diensten-regels komen hier NOOIT
-        # in: ze degraderen naar een TXT-regel i.p.v. de opportunity vast te houden.
-        $FailedItemCodes = @()
-
-        # Diensten (Kind='diensten', VaIt=1): worden NOOIT aangemaakt. Per unieke, niet-lege
-        # internalProductId controleren of die in AFAS bestaat -> $DienstenExists. Bestaat de
-        # code dan wordt het een werksoort-regel, anders (leeg of onbekend) een TXT-regel;
-        # de keuze valt in stap 2c. Diensten worden nooit in $FailedItemCodes gezet.
-        $DienstenExists = @{}
-        $DienstenCodes  = @($LineResolution.Values |
-            Where-Object { $_ -and $_.Kind -eq 'diensten' -and -not [string]::IsNullOrWhiteSpace($_.ItemCode) } |
-            ForEach-Object { $_.ItemCode } | Sort-Object -Unique)
-        foreach ($Code in $DienstenCodes) {
-            $Bestaat = $null -ne (Get-AfasArtikelByItemCode -Connector $ConnArtikelenGet -ItemCode $Code)
-            $DienstenExists[$Code] = $Bestaat
-            Write-Log INFO ("[Flow 2] Dienst [internalProductId {0}] | bestaat in AFAS: {1} -> {2}" -f `
-                $Code, $Bestaat, $(if ($Bestaat) { 'werksoort-regel (VaIt=1)' } else { 'TXT-regel' }))
-        }
-
-        # Artikelen (VaIt=2): de unieke mpn's; aanmaken indien afwezig.
+        # Alleen artikelen (Kind='artikel', VaIt=2) worden aangemaakt; diensten NOOIT (die
+        # degraderen in Flow 3 naar een werksoort- of TXT-regel).
         $AllItemCodes = @($LineResolution.Values |
             Where-Object { $_ -and $_.Kind -eq 'artikel' } |
             ForEach-Object { $_.ItemCode } | Sort-Object -Unique)
 
-        Write-Log INFO "$($AllItemCodes.Count) unieke artikelcode(s) (mpn) en $($DienstenCodes.Count) diensten-code(s) (internalProductId) gevonden in de gewonnen quotations"
+        Write-Log INFO "$($AllItemCodes.Count) unieke artikelcode(s) (mpn) gevonden in de gewonnen quotations"
 
         foreach ($ItemCode in $AllItemCodes) {
             # Bronregel voor de omschrijving (name), de item-ids en de categorie.
@@ -1168,39 +1317,28 @@ try {
             $SbCatId    = $BronRegel.category.id
             $SbCatNaam  = $BronRegel.category.name
             $MainCatId  = Get-SalesbuildrMainCategoryId -CategoryId $SbCatId -ParentMap $CategoryParentMap
-            $Artikelgroep     = Get-AfasArtikelgroep -Category $BronRegel.category -ArtikelgroepMap $ArtikelgroepMap -CategoryParentMap $CategoryParentMap
-            # $ArtikelgroepNaam alleen voor de (tijdelijk uitgezette) diagnostische dump hieronder.
-            # $ArtikelgroepNaam = if ($MainCatId -and $ArtikelgroepNaamMap.ContainsKey($MainCatId)) { $ArtikelgroepNaamMap[$MainCatId] } else { $null }
+            $Artikelgroep = Get-AfasArtikelgroep -Category $BronRegel.category -ArtikelgroepMap $ArtikelgroepMap -CategoryParentMap $CategoryParentMap
 
             # Bestaanscontrole: per mpn een gefilterde lookup (itemCode = ...), i.p.v. de
             # volledige catalogus van 30.000+ artikels op te halen.
             $BestaatInAfas = $null -ne (Get-AfasArtikelByItemCode -Connector $ConnArtikelenGet -ItemCode $ItemCode)
-
-            # Diagnostische per-artikel dump (tijdelijk uit; ontcommentarieer voor debugging).
-            <#
-            Write-Log INFO ("[Flow 2] Artikel '{0}' | mpn/ItCd {1} | item-id {2} | product-id {3} | SB-cat '{4}' ({5}) | SB-hoofdcat {6} | AFAS-cat {7} ({8}) | bestaat in AFAS: {9}" -f `
-                $BronRegel.name, $ItemCode, $BronRegel.id, $BronRegel.product.id, `
-                $SbCatNaam, $SbCatId, `
-                $(if ($MainCatId) { $MainCatId } else { '-' }), `
-                $(if ($ArtikelgroepNaam) { "'$ArtikelgroepNaam'" } else { '-' }), `
-                $(if ($Artikelgroep) { $Artikelgroep } else { 'niet gemapt' }), `
-                $BestaatInAfas)
-            #>
 
             if ($BestaatInAfas) {
                 Write-Log INFO "Artikel [$ItemCode] bestaat al in AFAS — overgeslagen"
                 continue
             }
 
-            # Artikelgroep (Grp) is verplicht bij aanmaken; ontbreekt de mapping -> overslaan.
+            # Artikelgroep (Grp) is verplicht bij aanmaken; ontbreekt de mapping -> overslaan
+            # en het watermerk vasthouden zodat Flow 2 het bij een volgende run opnieuw probeert
+            # (zodra de mapping is aangevuld). Flow 3 slaat de bijbehorende opportunity dan
+            # eveneens over omdat het artikel niet in AFAS bestaat.
             if ([string]::IsNullOrWhiteSpace($Artikelgroep)) {
                 Write-Log WARNING "Artikel [$ItemCode] overgeslagen: categorie '$SbCatNaam' (id $SbCatId, hoofdcategorie $(if ($MainCatId) { $MainCatId } else { 'onbekend' })) niet gemapt in mapping-artikelgroepen.xml"
-                $FailedItemCodes += $ItemCode
                 $Flow2Complete = $false
                 continue
             }
 
-            if ($AfasWritesOnHold) {
+            if ($AfasWritesOnHold2) {
                 Write-Log WARNING "[ON HOLD] Artikel [$ItemCode] zou aangemaakt worden (groep $Artikelgroep) — niet aangemaakt"
                 continue
             }
@@ -1209,16 +1347,109 @@ try {
                 New-AfasArtikel -Connector $ConnArtikelenUpdate -ItemCode $ItemCode `
                     -Omschrijving $BronRegel.name -Artikelgroep $Artikelgroep
             } catch {
-                # Aanmaken mislukt (API-fout e.d.): net als een ontbrekende mapping
-                # markeren als 'niet aangemaakt', zodat de HELE opportunity in stap 2c
-                # wordt overgeslagen — geen quotation, Forecast blijft open.
                 Write-Log ERROR "Fout bij aanmaken Artikel [$ItemCode]: $_"
-                $FailedItemCodes += $ItemCode
                 $Flow2Complete = $false
             }
         }
+    }
 
-        # ── Stap 2c: AFAS-quotation (KnQuotation, voorcalculatie) aanmaken per Won-Opportunity ──
+
+    ####################################################################
+    # FLOW 3 — Quotations: gewonnen SB-quotations → AFAS-quotation (voorcalculatie)
+    ####################################################################
+    #
+    # Bepalend is UITSLUITEND de primaire quote (primary:true):
+    #   Won  (ViOp=G): opportunity closed  +  primaire quote status == 'approved'
+    #                  → AFAS-quotation (KnQuotation) aanmaken + Forecast sluiten (G)
+    #   Lost (ViOp=N): opportunity closed  +  geen/niet-goedgekeurde primaire quote
+    #                  → GEEN quotation; alleen de Forecast sluiten (N)
+    # Een ontbrekende quote is GEEN fout — het is een geldige Lost-uitkomst.
+    #
+    # Artikelen worden hier NIET aangemaakt (dat doet Flow 2). Flow 3 controleert wel of elk
+    # artikel in AFAS bestaat: zo niet (Flow 2 uit/gefaald/mapping ontbreekt), dan wordt de
+    # HELE opportunity overgeslagen — een quotation-regel mag niet naar een niet-bestaand
+    # artikel verwijzen; de Forecast blijft open, watermerk vastgehouden voor herkansing.
+
+    if (-not $Flow3Enabled) {
+        Write-Log INFO "=== Flow 3 is uitgeschakeld in config.xml (flows/flow3) — overgeslagen ==="
+    }
+    else {
+        Write-Log INFO "=== Flow 3: Quotations — gewonnen SB-quotations → AFAS-quotation ==="
+        Write-Log INFO "Delta sinds: $LastQuotationsSync"
+
+        $ClosedOpportunities = Get-SalesbuildrClosedOpportunities -SinceDate $LastQuotationsSync
+        Write-Log INFO "$($ClosedOpportunities.Count) gesloten Opportunities gevonden"
+
+        # Batch-watermark voor Flow 3 (zie toelichting bij Flow 1).
+        $Flow3Complete = $true
+
+        # ── AFAS-schrijfacties (veiligheidsschakelaar) ──
+        # $false (standaard): Flow 3 maakt de AFAS-quotation (KnQuotation) aan én sluit de
+        # Forecast (CmForecast, G/N). Zet op $true om Flow 3 ON HOLD te zetten (alleen ophalen
+        # + categoriseren, geen writes); het watermerk schuift dan bewust NIET op.
+        $AfasWritesOnHold3 = $false
+        if ($AfasWritesOnHold3) {
+            Write-Log WARNING "Flow 3: AFAS-schrijfacties staan ON HOLD — geen quotations/Forecast-updates. Watermerk wordt niet opgeschoven."
+            $Flow3Complete = $false
+        }
+
+        # ── Stap 3a: Categoriseer elke gesloten Opportunity als Won of Lost (gedeelde helper) ──
+        $Outcome = Split-ClosedOpportunities -Opportunities $ClosedOpportunities -LogPrefix "Flow 3"
+        if (-not $Outcome.AllOk) { $Flow3Complete = $false }
+
+        $WonOpportunities  = $Outcome.Won
+        $LostOpportunities = $Outcome.Lost
+        $WonQuoteLines     = $Outcome.Lines
+        $WonQuoteTitles    = $Outcome.Titles
+        Write-Log INFO "Categorisatie: $($WonOpportunities.Count) Won (G), $($LostOpportunities.Count) Lost (N)"
+
+        # ── Stap 3b: Regels resolven + AFAS-beschikbaarheid bepalen (alleen Won) ──
+
+        # Alle quote-regels over alle Won-quotations, plat geslagen.
+        $AllWonLines = @($WonQuoteLines.Values | ForEach-Object { $_ })
+
+        # Resolve elke regel naar een AFAS-itemcode (ItCd) + regeltype (VaIt):
+        #   mpn aanwezig                 -> ItCd = mpn, VaIt = "2" (artikel)
+        #   geen mpn, hoofdcat Diensten  -> Kind = 'diensten', ItCd = internalProductId (mag leeg);
+        #                                   werksoort (bestaat in AFAS) of TXT-regel (bestaat niet)
+        #   geen van beide               -> onmapbare regel -> hele opportunity vasthouden (zie 3c)
+        $LineResolution = @{}
+        foreach ($Line in $AllWonLines) {
+            $LineResolution[$Line.id] = Resolve-AfasLineItem -Line $Line `
+                -CategoryParentMap $CategoryParentMap -DienstenMainCategoryId $DienstenMainCatId
+        }
+
+        # Diensten (Kind='diensten', VaIt=1): worden NOOIT aangemaakt. Per unieke, niet-lege
+        # internalProductId controleren of die in AFAS bestaat -> $DienstenExists. Bestaat de
+        # code dan wordt het een werksoort-regel, anders (leeg of onbekend) een TXT-regel;
+        # de keuze valt in stap 3c. Diensten worden nooit in $FailedItemCodes gezet.
+        $DienstenExists = @{}
+        $DienstenCodes  = @($LineResolution.Values |
+            Where-Object { $_ -and $_.Kind -eq 'diensten' -and -not [string]::IsNullOrWhiteSpace($_.ItemCode) } |
+            ForEach-Object { $_.ItemCode } | Sort-Object -Unique)
+        foreach ($Code in $DienstenCodes) {
+            $Bestaat = $null -ne (Get-AfasArtikelByItemCode -Connector $ConnArtikelenGet -ItemCode $Code)
+            $DienstenExists[$Code] = $Bestaat
+            Write-Log INFO ("[Flow 3] Dienst [internalProductId {0}] | bestaat in AFAS: {1} -> {2}" -f `
+                $Code, $Bestaat, $(if ($Bestaat) { 'werksoort-regel (VaIt=1)' } else { 'TXT-regel' }))
+        }
+
+        # Artikelen (Kind='artikel', VaIt=2): elk uniek mpn MOET in AFAS bestaan (aangemaakt
+        # door Flow 2). Ontbrekende codes -> $FailedItemCodes; de opportunity die zo'n artikel
+        # gebruikt wordt in stap 3c overgeslagen (watermerk vastgehouden). Zo blijft Flow 3
+        # correct als Flow 2 uit staat, faalde, of een categorie nog niet gemapt was.
+        $FailedItemCodes = @()
+        $AllItemCodes = @($LineResolution.Values |
+            Where-Object { $_ -and $_.Kind -eq 'artikel' } |
+            ForEach-Object { $_.ItemCode } | Sort-Object -Unique)
+        foreach ($ItemCode in $AllItemCodes) {
+            if ($null -eq (Get-AfasArtikelByItemCode -Connector $ConnArtikelenGet -ItemCode $ItemCode)) {
+                Write-Log WARNING "[Flow 3] Artikel [$ItemCode] bestaat niet in AFAS (nog niet aangemaakt door Flow 2?) — opportunities met dit artikel worden overgeslagen"
+                $FailedItemCodes += $ItemCode
+            }
+        }
+
+        # ── Stap 3c: AFAS-quotation (KnQuotation, voorcalculatie) aanmaken per Won-Opportunity ──
 
         foreach ($Opportunity in $WonOpportunities) {
             $OpportunityId = $Opportunity.id
@@ -1228,7 +1459,7 @@ try {
             $ForecastKey = ConvertFrom-ForecastExternalId -ExternalIdentifier $Opportunity.externalIdentifier
             if ($null -eq $ForecastKey) {
                 Write-Log ERROR "[$OpportunityId] Onverwacht externalIdentifier-formaat '$($Opportunity.externalIdentifier)' — kan forecast-id/PrId/SqNo niet parsen, overgeslagen"
-                $Flow2Complete = $false
+                $Flow3Complete = $false
                 continue
             }
 
@@ -1248,7 +1479,7 @@ try {
                 # Elke regel moet naar een AFAS-item te mappen zijn (artikel via mpn, of een
                 # Diensten-regel via internalProductId) én — voor artikelen — beschikbaar zijn.
                 # Zodra één regel onmapbaar is (geen mpn en niet in hoofdcategorie Diensten) of
-                # naar een niet-beschikbaar artikel verwijst (niet aangemaakt), slaan we de HELE
+                # naar een niet-beschikbaar artikel verwijst (niet in AFAS), slaan we de HELE
                 # opportunity over: een onvolledige voorcalculatie of een regel naar een niet-
                 # bestaand item mag niet ontstaan. De AFAS-quotation wordt NIET aangemaakt en de
                 # Forecast wordt NIET gesloten — die blijft open, watermerk blijft staan zodat de
@@ -1266,13 +1497,13 @@ try {
                 }
                 if ($Probleemregels.Count -gt 0) {
                     Write-Log WARNING "[$OpportunityId] Overgeslagen (quotation niet aangemaakt, Forecast blijft open): $($Probleemregels -join '; ')"
-                    $Flow2Complete = $false
+                    $Flow3Complete = $false
                     continue
                 }
 
                 $Regels = @()
                 foreach ($Line in $Lines) {
-                    # Resolutie uit stap 2b. Hierboven is al gegarandeerd dat $Res niet $null is.
+                    # Resolutie uit stap 3b. Hierboven is al gegarandeerd dat $Res niet $null is.
                     # QuoteItemResponseDto: 'quantity', 'price' = verkoopprijs p/st (Upri),
                     # 'cost' = kostprijs p/st (AmCo).
                     $Res = $LineResolution[$Line.id]
@@ -1283,7 +1514,7 @@ try {
                         # -> TXT-regel (geen ItCd, de regelnaam gaat mee als tekst).
                         $CodeBestaat = (-not [string]::IsNullOrWhiteSpace($Res.ItemCode)) -and $DienstenExists[$Res.ItemCode]
                         if ($CodeBestaat) {
-                            # === Werksoort-regel — payload volgt van gebruiker (baseline hieronder) ===
+                            # === Werksoort-regel ===
                             $Regels += @{
                                 ItemCode  = $Res.ItemCode
                                 Soort     = '1'
@@ -1293,7 +1524,7 @@ try {
                             }
                         }
                         else {
-                            # === TXT-regel — payload volgt van gebruiker ===
+                            # === TXT-regel ===
                             $Regels += @{
                                 Kind      = 'txt'
                                 Tekst     = $Line.name
@@ -1315,7 +1546,7 @@ try {
                     }
                 }
 
-                if ($AfasWritesOnHold) {
+                if ($AfasWritesOnHold3) {
                     Write-Log WARNING "[ON HOLD] [$OpportunityId] AFAS-quotation ($($ForecastKey.ForecastId), $($Regels.Count) regel(s)) zou aangemaakt worden — niet aangemaakt"
                 }
                 else {
@@ -1329,7 +1560,7 @@ try {
                             -Regels    $Regels
                     } catch {
                         Write-Log ERROR "[$OpportunityId] Fout bij aanmaken AFAS-quotation: $_"
-                        $Flow2Complete = $false
+                        $Flow3Complete = $false
                         continue
                     }
                 }
@@ -1337,7 +1568,7 @@ try {
 
             # ── Sluiten van de Won-Forecast (ViOp=G) ──
             # OrAF = totaal offertebedrag = Σ price × quantity × (1 - discount) over de quote-regels.
-            if ($AfasWritesOnHold) {
+            if ($AfasWritesOnHold3) {
                 Write-Log WARNING "[ON HOLD] [$OpportunityId] Forecast [SqNo $($ForecastKey.SqNo)] zou als Won (G) gesloten worden (OrAF $(Get-SalesbuildrQuoteTotal -Items $Lines)) — niet gesloten"
                 continue
             }
@@ -1348,12 +1579,12 @@ try {
                     -ViOp "G" -OrAF (Get-SalesbuildrQuoteTotal -Items $Lines)
             } catch {
                 Write-Log ERROR "[$OpportunityId] Fout bij sluiten Forecast [SqNo $($ForecastKey.SqNo)] als Won (G) in AFAS: $_"
-                $Flow2Complete = $false
+                $Flow3Complete = $false
                 continue
             }
         }
 
-        # ── Stap 2d: Lost-Opportunities — alleen de AFAS Forecast op N sluiten ──
+        # ── Stap 3d: Lost-Opportunities — alleen de AFAS Forecast op N sluiten ──
         #
         # Geen artikels/voorcalc: een Lost-forecast wordt enkel afgesloten. De
         # CmForecast-sleutel (verkooprelatie/PrId + volgnummer/SqNo) parsen we uit de
@@ -1364,11 +1595,11 @@ try {
             $ForecastKey = ConvertFrom-ForecastExternalId -ExternalIdentifier $Opportunity.externalIdentifier
             if ($null -eq $ForecastKey) {
                 Write-Log ERROR "[$OpportunityId] Onverwacht externalIdentifier-formaat '$($Opportunity.externalIdentifier)' — kan PrId/SqNo niet parsen, overgeslagen"
-                $Flow2Complete = $false
+                $Flow3Complete = $false
                 continue
             }
 
-            if ($AfasWritesOnHold) {
+            if ($AfasWritesOnHold3) {
                 Write-Log WARNING "[ON HOLD] [$OpportunityId] Forecast [SqNo $($ForecastKey.SqNo)] zou als Lost (N) gesloten worden — niet gesloten"
                 continue
             }
@@ -1377,7 +1608,113 @@ try {
                 Close-AfasForecast -Connector $ConnForecastUpdate -PrId $ForecastKey.PrId -SqNo $ForecastKey.SqNo -ViOp "N"
             } catch {
                 Write-Log ERROR "[$OpportunityId] Fout bij sluiten Forecast [SqNo $($ForecastKey.SqNo)] als Lost (N) in AFAS: $_"
-                $Flow2Complete = $false
+                $Flow3Complete = $false
+            }
+        }
+    }
+
+
+    ####################################################################
+    # FLOW 4 — SalesBuildr quote-PDF → AFAS dossieritem (KnSubject)
+    ####################################################################
+    #
+    # Voor elke gesloten Won-Opportunity (goedgekeurde primaire quote) wordt de SB-quote-PDF
+    # opgehaald en als dossieritem (KnSubject) bij de AFAS-quotation gehangen. Idempotent via
+    # de Salesbuildr_Dossieritems GetConnector: bestaat er al een bijlage (Type == StId,
+    # Ja_Nee == true) voor deze offerte, dan slaan we over — de KnSubject-POST is zelf NIET
+    # idempotent, dus zonder deze check zou een re-run dubbele bijlagen maken.
+    #
+    # Precondiitie: de AFAS-quotation (voorcalculatie) moet al bestaan (Flow 3). Zo niet, dan
+    # is er nog geen offerte om de PDF aan te koppelen — watermerk vasthouden en later opnieuw
+    # proberen. Een Lost-opportunity (geen goedgekeurde quote) is een legitieme no-op.
+
+    if (-not $Flow4Enabled) {
+        Write-Log INFO "=== Flow 4 is uitgeschakeld in config.xml (flows/flow4) — overgeslagen ==="
+    }
+    else {
+        Write-Log INFO "=== Flow 4: SalesBuildr quote-PDF → AFAS dossieritem ==="
+        Write-Log INFO "Delta sinds: $LastAttachmentSync"
+
+        $ClosedOpportunities = Get-SalesbuildrClosedOpportunities -SinceDate $LastAttachmentSync
+        Write-Log INFO "$($ClosedOpportunities.Count) gesloten Opportunities gevonden"
+
+        # Batch-watermark voor Flow 4 (zie toelichting bij Flow 1).
+        $Flow4Complete = $true
+
+        # ── AFAS-schrijfacties (veiligheidsschakelaar) — zie Flow 2 ──
+        $AfasWritesOnHold4 = $false
+        if ($AfasWritesOnHold4) {
+            Write-Log WARNING "Flow 4: AFAS-schrijfacties staan ON HOLD — geen dossieritems; alleen ophalen + inspectie. Watermerk wordt niet opgeschoven."
+            $Flow4Complete = $false
+        }
+
+        # Categoriseer (gedeelde helper): alleen Won-opportunities krijgen een PDF. Lost is een
+        # legitieme no-op (geen skip). Een mislukte quote-fetch zet AllOk=$false -> watermerk vast.
+        $Outcome = Split-ClosedOpportunities -Opportunities $ClosedOpportunities -LogPrefix "Flow 4"
+        if (-not $Outcome.AllOk) { $Flow4Complete = $false }
+        Write-Log INFO "Categorisatie: $($Outcome.Won.Count) Won (PDF), $($Outcome.Lost.Count) Lost (geen PDF)"
+
+        foreach ($Opportunity in $Outcome.Won) {
+            $OpportunityId = $Opportunity.id
+            $Quote         = $Outcome.Quotes[$OpportunityId]
+
+            # Sleutel uit de externalIdentifier (geen re-fetch van de Forecast nodig).
+            $ForecastKey = ConvertFrom-ForecastExternalId -ExternalIdentifier $Opportunity.externalIdentifier
+            if ($null -eq $ForecastKey) {
+                Write-Log ERROR "[$OpportunityId] Onverwacht externalIdentifier-formaat '$($Opportunity.externalIdentifier)' — overgeslagen"
+                $Flow4Complete = $false
+                continue
+            }
+
+            # Precondiitie: de AFAS-quotation moet al bestaan (Flow 3 aangemaakt). Zo niet:
+            # watermerk vasthouden en later opnieuw proberen — een bijlage bij een niet-
+            # bestaande offerte mag niet ontstaan.
+            if ($null -eq (Get-AfasQuotation -Connector $ConnVoorcalcGet -OfferteNr $ForecastKey.ForecastId)) {
+                Write-Log WARNING "[$OpportunityId] AFAS-quotation ($($ForecastKey.ForecastId)) bestaat nog niet — PDF nog niet gekoppeld, watermerk vastgehouden voor herkansing"
+                $Flow4Complete = $false
+                continue
+            }
+
+            # Idempotentie: hangt de PDF er al? (Salesbuildr_Dossieritems: Offerte + Type/Ja_Nee)
+            if (Get-AfasQuotationAttachment -Connector $ConnDossierGet -OfferteNr $ForecastKey.ForecastId -SubjectType $KnSubjectStId) {
+                Write-Log INFO "[$OpportunityId] PDF-bijlage al aanwezig bij offerte $($ForecastKey.ForecastId) — overgeslagen"
+                continue
+            }
+
+            # PDF ophalen (Base64).
+            try {
+                $PdfBase64 = Get-SalesbuildrQuotePdf -QuoteId $Quote.id
+            } catch {
+                Write-Log ERROR "[$OpportunityId] Fout bij ophalen SB-quote-PDF ($($Quote.id)): $_"
+                $Flow4Complete = $false
+                continue
+            }
+            if ($null -eq $PdfBase64) {
+                Write-Log WARNING "[$OpportunityId] Geen PDF beschikbaar voor SB-quote $($Quote.id) — overgeslagen, watermerk vastgehouden"
+                $Flow4Complete = $false
+                continue
+            }
+
+            $FileName = "SB-Offerte-$($ForecastKey.ForecastId).pdf"
+
+            if ($AfasWritesOnHold4) {
+                Write-Log WARNING "[ON HOLD] [$OpportunityId] Dossieritem '$FileName' zou aangemaakt worden bij offerte $($ForecastKey.ForecastId) — niet aangemaakt"
+                continue
+            }
+
+            try {
+                New-AfasSubjectAttachment `
+                    -Connector        $ConnSubjectUpdate `
+                    -SubjectType      $KnSubjectStId `
+                    -UserId           $KnSubjectUsId `
+                    -ForecastId       $ForecastKey.ForecastId `
+                    -Verkooprelatie   $ForecastKey.PrId `
+                    -FileName         $FileName `
+                    -FileStreamBase64 $PdfBase64
+            } catch {
+                Write-Log ERROR "[$OpportunityId] Fout bij aanmaken dossieritem (KnSubject): $_"
+                $Flow4Complete = $false
+                continue
             }
         }
     }
@@ -1406,7 +1743,25 @@ try {
         Set-SyncWatermark -Path $SyncStateFile -Name 'Flow2' -Date (Get-Date)
         Write-Log INFO "Flow 2 state bijgewerkt"
     } else {
-        Write-Log WARNING "Flow 2 state NIET bijgewerkt — niet alle Opportunities verwerkt; wordt opnieuw geprobeerd bij volgende run"
+        Write-Log WARNING "Flow 2 state NIET bijgewerkt — niet alle artikelen aangemaakt; wordt opnieuw geprobeerd bij volgende run"
+    }
+
+    If (-not $Flow3Enabled) {
+        Write-Log INFO "Flow 3 uitgeschakeld — state ongewijzigd"
+    } ElseIf ($Flow3Complete) {
+        Set-SyncWatermark -Path $SyncStateFile -Name 'Flow3' -Date (Get-Date)
+        Write-Log INFO "Flow 3 state bijgewerkt"
+    } else {
+        Write-Log WARNING "Flow 3 state NIET bijgewerkt — niet alle quotations verwerkt; wordt opnieuw geprobeerd bij volgende run"
+    }
+
+    If (-not $Flow4Enabled) {
+        Write-Log INFO "Flow 4 uitgeschakeld — state ongewijzigd"
+    } ElseIf ($Flow4Complete) {
+        Set-SyncWatermark -Path $SyncStateFile -Name 'Flow4' -Date (Get-Date)
+        Write-Log INFO "Flow 4 state bijgewerkt"
+    } else {
+        Write-Log WARNING "Flow 4 state NIET bijgewerkt — niet alle PDF's gekoppeld; wordt opnieuw geprobeerd bij volgende run"
     }
 
 } catch {

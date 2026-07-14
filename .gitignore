@@ -1,6 +1,3 @@
-# Sync-watermark state
-configs/Last*.xml
-
 # Runtime state & logs
 ignore/
 

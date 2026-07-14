@@ -740,7 +740,7 @@ PUT /public-api/opportunity/ext/{externalIdentifier}
 
 `{externalIdentifier}` is built as `afas-Forecast-{forecast}-{volgnummer}-{verkooprelatie}` from the AFAS `Salesbuildr_Forecasts` GetConnector record (e.g. `afas-Forecast-11310-42-10654`). Skipped (not upserted) if the existing Opportunity's `statusId` is already `"closed"`.
 
-> **Three distinct fields — don't conflate them.** `forecast` is a globally-unique AFAS forecast id (e.g. `11310`), used as the `QuId` on the AFAS quotation (`KnQuotation`, voorcalculatie) — it is **not** the CmForecast key. `volgnummer` is the CmForecast `SqNo` (e.g. `42`). `verkooprelatie` is the AFAS debtor code = CmForecast `PrId` (e.g. `"10654"`), also used as `DbId` on the AFAS quotation. Encoding all three in the `externalIdentifier` lets Flow 2 parse the CmForecast key straight from the identifier — via regex `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$` — with **no re-fetch** of the Forecast.
+> **Three distinct fields — don't conflate them.** `forecast` is a globally-unique AFAS forecast id (e.g. `11310`), used as the `QuId` on the AFAS quotation (`KnQuotation`, voorcalculatie) — it is **not** the CmForecast key. `volgnummer` is the CmForecast `SqNo` (e.g. `42`). `verkooprelatie` is the AFAS debtor code = CmForecast `PrId` (e.g. `"10654"`), also used as `DbId` on the AFAS quotation. Encoding all three in the `externalIdentifier` lets Flows 3 and 4 each parse the CmForecast key straight from the identifier — via regex `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$` — with **no re-fetch** of the Forecast.
 
 | AFAS field | Salesbuildr field | Notes |
 |---|---|---|
@@ -764,7 +764,7 @@ PUT /public-api/opportunity/ext/{externalIdentifier}
 GET /public-api/opportunity?filters=statusId:closed&size={n}&from={offset}
 ```
 
-Paginated via `size`/`from`. The `filters` parameter is **equality-only** (`field:value`, multiple values OR'd with `|`) — there are **no comparison/range operators**, so the close-date delta cannot be filtered server-side. The delta is therefore applied **client-side** on `closedAt > SinceDate` (not `updatedAt`, which moves on any edit); opportunities without a `closedAt` are skipped. Delta-tracked via the `Flow2` node in the `configs/LastSyncDates.xml` state file (shared with Flow 1's `Flow1` node; see `Get-/Set-SyncWatermark` in `Sync-Forecasts.ps1`). The same file's optional `<OverrideDays>N</OverrideDays>` node is a test override that makes both flows sync from N days ago at local midnight for that run (`Get-SyncOverrideDays`); ignored when empty/missing/non-numeric.
+Paginated via `size`/`from`. The `filters` parameter is **equality-only** (`field:value`, multiple values OR'd with `|`) — there are **no comparison/range operators**, so the close-date delta cannot be filtered server-side. The delta is therefore applied **client-side** on `closedAt > SinceDate` (not `updatedAt`, which moves on any edit); opportunities without a `closedAt` are skipped. Flows 2 (Items), 3 (Quotations) and 4 (PDF) each call this independently, with their own delta and their own watermark node — `Flow2`, `Flow3`, `Flow4` respectively — in the shared `configs/LastSyncDates.xml` state file (alongside Flow 1's `Flow1` node; see `Get-/Set-SyncWatermark` in `Sync-Forecasts.ps1`). The same file's optional `<OverrideDays>N</OverrideDays>` node is a test override that makes all four flows sync from N days ago at local midnight for that run (`Get-SyncOverrideDays`); ignored when empty/missing/non-numeric.
 
 ### Fetch the primary quote for a closed Opportunity
 
@@ -795,9 +795,9 @@ Among the returned quotes, the one with `primary: true` is used — **no fallbac
 
 `QuoteItemResponseDto` (the quote **item**) has **no `customFields` of its own** — custom fields live on the item's nested **`product`** reference (`IdentifiedEntityResponseDto`: `id, name, externalIdentifier, labels, customFields`). `product` is nullable — free-form quote lines with no linked catalog product have none.
 
-Each line is resolved by `Resolve-AfasLineItem -Line -CategoryParentMap -DienstenMainCategoryId`, in order:
+Each line is resolved by `Resolve-AfasLineItem -Line -CategoryParentMap -DienstenMainCategoryId` — called independently by Flow 2 (Items) and Flow 3 (Quotations), each on their own fetched batch of Won lines, in order:
 
-1. **`mpn` present** → `ItemCode = mpn`, `VaIt = "2"` (artikel). Unchanged from before: used for both the "does the article exist?" lookup (`Salesbuildr_Artikelen.itemCode`) and creation (`FbItemArticle.ItCd`).
+1. **`mpn` present** → `ItemCode = mpn`, `VaIt = "2"` (artikel). Unchanged from before: used for both the "does the article exist?" lookup (`Salesbuildr_Artikelen.itemCode`, Flows 2 and 3) and creation (`FbItemArticle.ItCd`, Flow 2 only).
 2. **No `mpn`, but the line's main category is "Diensten"** — resolved the same way as the artikelgroep main category below (`Get-SalesbuildrMainCategoryId` walks the leaf `category.id` up to its root, using the parent map built at startup) and compared against `configs/config.xml`'s `<salesbuildr><diensten_maincategory_id>` (SB main-category id `UyOpp42UPGy3LKgSOQGX` by default; also added to `configs/config.example.xml`) → `Kind = 'diensten'`, `ItemCode` = the line's **`internalProductId`** (or `''` if the product has none).
 3. **Neither `mpn` nor Diensten** → the line is unmappable (`Resolve-AfasLineItem` returns `$null`).
 
@@ -809,20 +809,20 @@ Reading the `internalProductId` (`Get-SalesbuildrProductInternalId`):
 - The helper therefore **always** fetches the full product via `GET /public-api/product/{id}` (`Get-SalesbuildrProductById`, returns a [`ProductResponseDto`](openapi.json#/components/schemas/ProductResponseDto)) — cached per product id in `$Global:SbProductCache` so multiple lines referencing the same product cost only one extra API call.
 - Returns the trimmed `internalProductId` string, or `$null` if there is no linked product or the field is empty.
 
-**Diensten existence check** (Stap 2b): for each unique non-blank Diensten `internalProductId`, the script checks AFAS the same way as for articles — a per-code filtered `Salesbuildr_Artikelen.itemCode` lookup (`Get-AfasArtikelByItemCode`) — result stored in `$DienstenExists`. Diensten codes are **never** added to `$FailedItemCodes` and **never created** via `FbItemArticle` (that connector only creates articles).
+**Diensten existence check** (Flow 3, Stap 3b): for each unique non-blank Diensten `internalProductId`, the script checks AFAS the same way as for articles — a per-code filtered `Salesbuildr_Artikelen.itemCode` lookup (`Get-AfasArtikelByItemCode`) — result stored in `$DienstenExists`. Diensten codes are **never** added to `$FailedItemCodes` and **never created** via `FbItemArticle` (that connector only creates articles, and only Flow 2 ever calls it).
 
-**Line building** (Stap 2c / `New-AfasQuotation`): a Diensten line becomes one of two `KnQuotationLine` shapes, based on the existence check:
+**Line building** (Flow 3, Stap 3c / `New-AfasQuotation`): a Diensten line becomes one of two `KnQuotationLine` shapes, based on the existence check:
 
 - **exists in AFAS → werksoort line**, `VaIt = "1"`: `ItCd = internalProductId`, `UnId = ""` (no unit), `QuUn`/`Qu`/`QuSa` = quantity, `Upri` = price, and `AmCo = "0"` **always** (werksoorten always have cost price 0).
 - **not found, or blank `internalProductId` → TXT line**, `VaIt = "3"`: `ItCd = "SBO"` (fixed AFAS text-item code for Salesbuildr text lines), `Ds` = the composed info string `"{name} - aantal {qty}, prijs {price}, kostprijs {cost}"` capped at **255 chars**, and `UnId`/`QuUn`/`Qu`/`QuSa`/`Upri`/`AmCo` all **empty strings** (a text line carries no quantities or amounts).
 
 Article lines are unaffected by any of this — they stay `VaIt = "2"` with `UnId = "St"` and `AmCo = cost`.
 
-**Whole-opportunity enforcement:** in Stap 2c, if any line of a Won opportunity is unmappable (case 3 above) or resolves to an **article** unavailable in AFAS (failed to create), the **entire opportunity** is skipped — the AFAS quotation (`KnQuotation`) is not created and the originating Forecast is not closed (stays open), with the watermark held for retry. **Diensten lines never trigger this skip** — regardless of whether their `internalProductId` exists in AFAS, they always resolve to a werksoort or TXT line. See [AFAS_API_Guide.md](AFAS_API_Guide.md#promax-implementation-notes-sync-forecastsps1) for the resulting `KnQuotationLine` payload shapes.
+**Whole-opportunity enforcement:** in Flow 3's Stap 3c, if any line of a Won opportunity is unmappable (case 3 above) or resolves to an **article** unavailable in AFAS (not yet created by Flow 2), the **entire opportunity** is skipped — the AFAS quotation (`KnQuotation`) is not created and the originating Forecast is not closed (stays open), with the watermark held for retry. **Diensten lines never trigger this skip** — regardless of whether their `internalProductId` exists in AFAS, they always resolve to a werksoort or TXT line. See [AFAS_API_Guide.md](AFAS_API_Guide.md#promax-implementation-notes-sync-forecastsps1) for the resulting `KnQuotationLine` payload shapes.
 
 ### Article group (`Grp`) via `configs/mapping-artikelgroepen.xml`
 
-When a missing article is created in AFAS (Flow 2 step 2b), its **artikelgroep** (`FbItemArticle.Grp`) is required and is resolved in a **two-hop main-category lookup**: the line's leaf `category.id` is walked up to its main (root) category, and that main-category id is then looked up in the repo file `configs/mapping-artikelgroepen.xml`.
+When a missing article is created in AFAS (Flow 2 — Items), its **artikelgroep** (`FbItemArticle.Grp`) is required and is resolved in a **two-hop main-category lookup**: the line's leaf `category.id` is walked up to its main (root) category, and that main-category id is then looked up in the repo file `configs/mapping-artikelgroepen.xml`.
 
 **Hop 1 — leaf category → main category.** At the **start of the run**, `Get-SalesbuildrCategoryParentMap` fetches all categories via `GET /public-api/category` (flat list, [`CategoryResponseDto[]`](openapi.json#/components/schemas/CategoryResponseDto)) and builds an in-memory map `category.id -> parentCategoryId` (empty `parentCategoryId` = root). For each quote line, `Get-SalesbuildrMainCategoryId -CategoryId -ParentMap` walks the line's `category.id` (`QuoteItemResponseDto.category.id`) up this parent chain to the topmost/root category id (cycle-protected; returns `$null` if the category id is unknown to the map).
 
@@ -837,7 +837,7 @@ When a missing article is created in AFAS (Flow 2 step 2b), its **artikelgroep**
 - `SB-maincat-id` = the SB **main (root) category** id — the result of hop 1, not the quote line's leaf `category.id`.
 - `AFAS-id` = the AFAS artikelgroep code (`Grp`).
 - `AFAS-naam` = the artikelgroep description, used only for logging.
-- Only categories with a non-empty `AFAS-id` are loaded into the in-memory map. A main category absent from the file, or present with an empty `AFAS-id` — or a leaf category that cannot be resolved to a main category at all — is "not mapped" — the article, and its whole opportunity, are skipped (WARNING, watermark held for retry).
+- Only categories with a non-empty `AFAS-id` are loaded into the in-memory map. A main category absent from the file, or present with an empty `AFAS-id` — or a leaf category that cannot be resolved to a main category at all — is "not mapped": Flow 2 skips creating that article (WARNING, its watermark held for retry); the article then stays missing in AFAS, so Flow 3 subsequently detects it via its own existence check and skips the whole opportunities that reference it.
 
 `GET /public-api/category` is fetched once per run (not obsolete/removed — it is back, needed to resolve main categories); `configs/config.xml`'s old `<afas><artikelgroepmapping><costcenter id grp>` block remains removed (superseded by `configs/mapping-artikelgroepen.xml`). See `Get-SalesbuildrCategoryParentMap`, `Get-SalesbuildrMainCategoryId`, `Get-AfasArtikelgroep` (now takes `-CategoryParentMap`).
 
@@ -847,10 +847,10 @@ Each closed Opportunity is categorized strictly by its **primary quote** (`prima
 
 | Outcome | Condition | Actions |
 |---|---|---|
-| **Won** (`ViOp = "G"`) | primary quote exists **and** `status == "approved"` | create missing Articles, create the AFAS quotation (`KnQuotation`, voorcalculatie), close Forecast with `G` + `OrAF` |
-| **Lost** (`ViOp = "N"`) | no primary quote, **or** primary quote `status != "approved"` | close Forecast with `N` only — no Articles, no AFAS quotation |
+| **Won** (`ViOp = "G"`) | primary quote exists **and** `status == "approved"` | Flow 2 creates missing Articles (`FbItemArticle`); Flow 3 creates the AFAS quotation (`KnQuotation`, voorcalculatie) and closes the Forecast with `G` + `OrAF`; Flow 4 attaches the SB quote PDF (`KnSubject`) once the quotation exists |
+| **Lost** (`ViOp = "N"`) | no primary quote, **or** primary quote `status != "approved"` | Flow 3 closes the Forecast with `N` only — no Articles, no AFAS quotation, no PDF |
 
-A missing/unapproved primary quote is **not** an error — it's a legitimate Lost outcome and still advances the watermark once the Forecast is closed successfully. Only genuine API/network failures (and unmapped categories, missing Companies, etc.) hold the watermark for retry.
+Flows 2, 3 and 4 each run this categorization independently (on their own fetched batch, via the shared `Split-ClosedOpportunities` helper), so a missing/unapproved primary quote is **not** an error — it's a legitimate Lost outcome and still advances each flow's own watermark once its work for that opportunity is done. Only genuine API/network failures (and unmapped categories, missing Companies, unavailable articles, etc.) hold a watermark for retry.
 
 > **Won idempotency ordering:** for a Won opportunity, "create the AFAS quotation" and "close the Forecast" are decoupled. If the `KnQuotation` already exists (idempotency check on `offerte`), only its **creation** is skipped — the Forecast is still closed with `G` + `OrAF` (the close is an idempotent `PUT`). This means a prior run that created the quotation but crashed/errored before closing the Forecast will complete the close on the next run, instead of retrying (and failing) the creation forever. The unmapped-category / unmappable-line whole-opportunity skip (see [AFAS_API_Guide.md](AFAS_API_Guide.md#promax-implementation-notes-sync-forecastsps1) and the [line resolution notes above](#resolving-the-line-item-itcd--vait-via-resolve-afaslineitem)) only applies when creation is attempted — a quotation that already exists necessarily had its articles/werksoorten resolved in a prior run.
 
@@ -866,13 +866,23 @@ OrAF = Σ (price × quantity × (1 - discount))
 
 ### Close the originating Forecast (`OpportunityResponseDto` → AFAS)
 
-Flow 2 no longer re-fetches the AFAS Forecast — the composite CmForecast key and the AFAS quotation id are all parsed directly from the Opportunity's `externalIdentifier` via `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$`:
+Flow 3 never re-fetches the AFAS Forecast — the composite CmForecast key and the AFAS quotation id are all parsed directly from the Opportunity's `externalIdentifier` via `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$`:
 
 - `SqNo` = `$Matches.sqno` (`volgnummer`)
 - `PrId` = `$Matches.pr` (`verkooprelatie`)
 - `QuId` (AFAS quotation / idempotency key) = `$Matches.fc` (the AFAS `forecast` id)
 
 See [AFAS_API_Guide.md](AFAS_API_Guide.md) for the resulting `CmForecast`/`KnQuotation`/`FbItemArticle` payloads.
+
+### Download the quote PDF and attach it in AFAS (Flow 4)
+
+```
+GET /public-api/quote/{id}/pdf
+```
+
+Returns the quote PDF as a **binary file** (not JSON) — a 404 means the quote has no PDF (e.g. not yet generated/approved). `Get-SalesbuildrQuotePdf -QuoteId` calls this via `Invoke-WebRequest` directly rather than the shared `Invoke-SalesbuildrRequest` wrapper, because that wrapper's `ConvertFrom-Json` would corrupt binary content; it reads the raw bytes off `RawContentStream.ToArray()` (works on both Windows PowerShell 5.1 and PowerShell 7) and returns them Base64-encoded, ready for `KnSubjectAttachment.FileStream`. HTTP 404 or an empty response body both return `$null` (logged WARNING, Flow 4 watermark held for retry).
+
+Flow 4 only requests the PDF for **Won** opportunities — same primary-quote/`status == "approved"` check used by the shared Won/Lost categorization (`Split-ClosedOpportunities` / `Get-SalesbuildrPrimaryQuote`) — and only once the AFAS quotation for that opportunity already exists (`KnQuotation`, created by Flow 3) and no attachment is recorded yet for it in `Salesbuildr_Dossieritems` (see [AFAS_API_Guide.md](AFAS_API_Guide.md#salesbuildr_dossieritems--getconnector-read-attachment-records)). A Lost opportunity (no approved primary quote) is a legitimate no-op here too — no PDF, no error, watermark still advances. See [AFAS_API_Guide.md](AFAS_API_Guide.md#attach-the-sb-quote-pdf-as-a-dossieritem-knsubject-post-flow-4) for the resulting `KnSubject` payload.
 
 ---
 

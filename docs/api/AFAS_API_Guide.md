@@ -1543,6 +1543,141 @@ Content-Type: application/json
 
 ---
 
+## Salesbuildr_Dossieritems — GetConnector (Read Attachment Records)
+
+**Connector name:** `Salesbuildr_Dossieritems`  
+Read-only connector returning dossieritem (attachment) records linked to a quotation. Use this to check whether a SalesBuildr quote PDF has already been attached to an AFAS quotation before writing via `KnSubject` (the `KnSubject` POST itself is **not** idempotent).
+
+```http
+GET /connectors/Salesbuildr_Dossieritems?skip=0&take=100
+Authorization: AfasToken {base64_encoded_token}
+```
+
+### Response Schema
+
+```json
+{
+  "skip": 0,
+  "take": 100,
+  "rows": [
+    {
+      "Type": 46,
+      "Ja_Nee": true,
+      "Verkooprelatie": "10654",
+      "Offerte": "11310"
+    }
+  ]
+}
+```
+
+### Field Reference
+
+| Field | Type | Description | Maps to `KnSubject` |
+|---|---|---|---|
+| `Type` | integer | Dossieritemtype | `StId` |
+| `Ja_Nee` | boolean | Whether the attachment is present | — (idempotency flag) |
+| `Verkooprelatie` | string | Customer account code (debtor code) | `KnSubjectLink.SfId` |
+| `Offerte` | string | AFAS `forecast` id (quotation number, `KnQuotation.QuId`) | `KnSubjectLink.QuId` |
+
+### Filtering
+
+```http
+# Look up existing attachments for a given quotation (AFAS forecast id)
+GET /connectors/Salesbuildr_Dossieritems?filterfieldids=Offerte&filtervalues=11310&operatortypes=1
+```
+
+A row with `Type` equal to the configured dossieritemtype (`StId`, see Promax Implementation Notes below) and `Ja_Nee == true` means the SB quote PDF is already attached — Flow 4 skips creation in that case.
+
+---
+
+## KnSubject — Dossieritem (Attachment)
+
+**Connector name:** `KnSubject`
+
+Creates a dossieritem (file attachment) in AFAS Profit, optionally linked to a relation/subject and carrying a file attachment sub-object. Used by Flow 4 to attach the SalesBuildr quote PDF to the AFAS quotation.
+
+**Sub-objects:** `KnSubjectLink` (links the dossieritem to a relation/subject), `KnSubjectAttachment` (the file itself) — both nested under `Objects`.
+
+> ⚠️ Unlike `CmForecast` (`PUT`) and `KnQuotation` (idempotency checked via `offerte` before creating), a `KnSubject` `POST` is **not** idempotent — re-posting creates a duplicate attachment. Always check `Salesbuildr_Dossieritems` first (see above).
+
+---
+
+### Field Reference
+
+#### Identity & Header
+
+| Field | Type | Description |
+|---|---|---|
+| `StId` | integer | Dossieritemtype (e.g. `46`) — configurable via `configs/config.xml`'s `<afas><kn_subject_stid>` |
+| `Ds` | string | Description |
+| `Da` | datetime | Date/time (`yyyy-MM-ddTHH:mm`) |
+| `UsId` | string | AFAS user id that owns the dossieritem — configurable via `configs/config.xml`'s `<afas><kn_subject_usid>` |
+
+#### `KnSubjectLink` (sub-object)
+
+| Field | Type | Description |
+|---|---|---|
+| `ToSR` | boolean | Link to subject/relation (always `true` in Promax usage) |
+| `SfTp` | integer | Source type of the link target — always `4` in Promax usage |
+| `SfId` | string | Source id — the verkooprelatie/debtor code |
+| `QuId` | string | Quotation number (AFAS `forecast` id) the dossieritem is linked to |
+
+#### `KnSubjectAttachment` (sub-object)
+
+| Field | Type | Description |
+|---|---|---|
+| `FileName` | string | File name including extension (e.g. `SB-Offerte-11310.pdf`) |
+| `FileStream` | string (Base64) | The file's raw bytes, Base64-encoded |
+
+---
+
+### Insert a Dossieritem with an Attachment
+
+```http
+POST /connectors/KnSubject
+Authorization: AfasToken {base64_encoded_token}
+Content-Type: application/json
+
+{
+  "KnSubject": {
+    "Element": {
+      "Fields": {
+        "StId": 46,
+        "Ds": "SB Offerte - 11310",
+        "Da": "2026-07-14T10:00",
+        "UsId": "53307._sa_salesbldr"
+      },
+      "Objects": [
+        {
+          "KnSubjectLink": {
+            "Element": {
+              "Fields": {
+                "ToSR": true,
+                "SfTp": 4,
+                "SfId": "10654",
+                "QuId": "11310"
+              }
+            }
+          }
+        },
+        {
+          "KnSubjectAttachment": {
+            "Element": {
+              "Fields": {
+                "FileName": "SB-Offerte-11310.pdf",
+                "FileStream": "{base64_encoded_pdf}"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+---
+
 ## Promax Implementation Notes (Sync-Forecasts.ps1)
 
 Concrete payloads used by the forecast sync script, as implemented.
@@ -1569,7 +1704,7 @@ If a matching `Salesbuildr_Voorcalculatie` record is found (`$QuotationExists = 
 
 ### Opportunity `externalIdentifier` format
 
-Flow 1 sets the Salesbuildr Opportunity's `externalIdentifier` to `afas-Forecast-{forecast}-{volgnummer}-{verkooprelatie}` (e.g. `afas-Forecast-11310-42-10654`), encoding three distinct `Salesbuildr_Forecasts` fields so Flow 2 can parse the CmForecast key directly with **no re-fetch** of the Forecast:
+Flow 1 sets the Salesbuildr Opportunity's `externalIdentifier` to `afas-Forecast-{forecast}-{volgnummer}-{verkooprelatie}` (e.g. `afas-Forecast-11310-42-10654`), encoding three distinct `Salesbuildr_Forecasts` fields so Flows 3 and 4 can parse the CmForecast key directly with **no re-fetch** of the Forecast:
 
 | Field | Example | Role |
 |---|---|---|
@@ -1577,7 +1712,7 @@ Flow 1 sets the Salesbuildr Opportunity's `externalIdentifier` to `afas-Forecast
 | `volgnummer` | `42` | CmForecast `SqNo` (composite key part) |
 | `verkooprelatie` | `"10654"` | CmForecast `PrId` (composite key part; AFAS debtor code); also used as the AFAS quotation's `KnQuotation.DbId` |
 
-Flow 2 parses all three back out via regex `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$`.
+Flow 3 (quotation creation / Forecast close) and Flow 4 (PDF attachment) each parse all three back out independently via regex `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$` (`ConvertFrom-ForecastExternalId`).
 
 ### Close a Forecast as won or lost (`CmForecast`, `PUT`)
 
@@ -1593,7 +1728,7 @@ Triggered when a closed Salesbuildr Opportunity is categorized Won or Lost (stri
 
 Won (`ViOp: "G"`) example above; Lost is identical except `"ViOp": "N"` and **no** `OrAF` field at all.
 
-- `@PrId` / `@SqNo` are parsed straight from the Opportunity's `externalIdentifier` (see format above) — Flow 2 no longer re-fetches the Forecast from AFAS.
+- `@PrId` / `@SqNo` are parsed straight from the Opportunity's `externalIdentifier` (see format above) — Flow 3 no longer re-fetches the Forecast from AFAS.
 - For Won opportunities, this close call is wrapped in its own `try`/`catch` (separate from the `KnQuotation` creation above): if it fails, the flag is cleared and the opportunity is skipped, but the AFAS quotation created earlier in the same run is **not** rolled back — the next run's idempotency check (see above) picks it up and just retries the close.
 - `ViRe` is always `"00"`.
 - `DaSc` is currently the current date (placeholder — revisit later for a real close date).
@@ -1632,7 +1767,7 @@ Creates the **AFAS quotation** (`KnQuotation`, voorcalculatie — distinct from 
 - `QuDa` is currently the current date (placeholder — revisit later for a real quote date).
 - `Objects` holds one `KnQuotationLine` with one `Element` array containing one entry per quote line (see example above — one article line, one werksoort line).
 - **Line fields (`ItCd`/`VaIt` resolved per line by `Resolve-AfasLineItem`):** `ItCd = mpn` with `VaIt = "2"` (artikel) when the quote line has an `mpn`; otherwise, when the line's main category is **"Diensten"** (`configs/config.xml`'s `<salesbuildr><diensten_maincategory_id>`, SB main-category id `UyOpp42UPGy3LKgSOQGX` by default), `ItCd` = the line's **`internalProductId`** (via `Get-SalesbuildrProductInternalId` — always a full `GET /public-api/product/{id}` fetch, the inline quote-line `product` reference never carries `internalProductId`) with `VaIt = "1"` (werksoort) if that code already exists in AFAS, or `VaIt = "3"` (tekstregel/TXT, `ItCd` forced to `"SBO"`) if it doesn't (or `internalProductId` is blank) — see the **three `KnQuotationLine` shapes** below and [Salesbuildr_API_Guide.md](Salesbuildr_API_Guide.md#promax-implementation-notes-sync-forecastsps1) for the full resolution logic. The **old "AFAS werksoort" product custom field is no longer read** — a werksoort must now sit under the Diensten main category. Diensten item codes are **referenced only**, same as before — never created via `FbItemArticle` (that connector creates articles, `VaTp`/`type=2`, only) — but a Diensten code missing from AFAS no longer makes the line unavailable; it becomes a TXT line instead (never a skip). A line with neither an `mpn` nor a Diensten main category is unmappable. `New-AfasQuotation` sets `VaIt` from each Regel's `Soort` field (falls back to `"2"` if absent). `UnId` = unit: `"St"` (stuks/pieces) on artikel lines, **empty string `""`** on werksoort and TXT lines. `QuUn`/`Qu`/`QuSa` are all set to the line `quantity` on artikel/werksoort lines, and to **empty strings** on a TXT line. `Upri` = per-unit sell price (`price`) on artikel/werksoort lines, empty string on TXT. `AmCo` = per-unit cost (`cost`) on an artikel line, **always `"0"`** on a werksoort line, empty string on TXT. All amounts are serialized as invariant-culture strings with a **dot** decimal separator (e.g. `"1749.03"`, never `"1749,03"`).
-- ⚠️ **Whole-opportunity enforcement:** if any line of a Won opportunity is unmappable (no `mpn` and not a Diensten line) or resolves to an **article** unavailable in AFAS (failed to create), the **entire opportunity** is skipped in Stap 2c — the AFAS quotation is not created and the originating Forecast is **not** closed (stays open), with the watermark held for retry. This extends the earlier unmapped-artikelgroep skip (see `Grp` below) to cover unmappable/unavailable article lines in general. **Diensten lines are exempt** — a Diensten line always resolves to a werksoort or TXT line (see below) and can never trigger this skip, even when its `internalProductId` doesn't exist in AFAS.
+- ⚠️ **Whole-opportunity enforcement (Flow 3, Stap 3c):** if any line of a Won opportunity is unmappable (no `mpn` and not a Diensten line) or resolves to an **article** unavailable in AFAS (not yet created — that's Flow 2's job), the **entire opportunity** is skipped — the AFAS quotation is not created and the originating Forecast is **not** closed (stays open), with the watermark held for retry. This extends the earlier unmapped-artikelgroep skip (see `Grp` below, which happens in Flow 2 and surfaces here in Flow 3 as a missing article) to cover unmappable/unavailable article lines in general. **Diensten lines are exempt** — a Diensten line always resolves to a werksoort or TXT line (see below) and can never trigger this skip, even when its `internalProductId` doesn't exist in AFAS.
 
 #### The three `KnQuotationLine` shapes (`VaIt` values)
 
@@ -1696,9 +1831,47 @@ GET /connectors/Salesbuildr_Artikelen?filterfieldids=itemCode&filtervalues={mpn}
 > - `ItCd` = the Salesbuildr quote line's **`mpn`** (always — the `product` field is nullable). Lines without an `mpn` are skipped.
 > - `AuId` = always `false` (item code is supplied explicitly, no AFAS auto-numbering).
 > - `Ds` = the item `name`, capped at 100 characters (AFAS limit).
-> - `Grp` (artikelgroep, **required**) is resolved via a **two-hop main-category lookup**: the quote line's leaf `category.id` is walked up to its main (root) category by `Get-SalesbuildrMainCategoryId`, using the parent map built at startup by `Get-SalesbuildrCategoryParentMap` (`GET /public-api/category`, flat list, keyed by `parentCategoryId`); that main-category id is then looked up in `configs/mapping-artikelgroepen.xml` (`<categorie SB-maincat-id="..." AFAS-id="..." AFAS-naam="..."/>`) → `Grp`. See [Salesbuildr_API_Guide.md](Salesbuildr_API_Guide.md#article-group-grp-via-configsmapping-artikelgroepenxml) for the full two-hop mechanism. `configs/config.xml`'s old `<artikelgroepmapping><costcenter>` block remains removed (superseded by `configs/mapping-artikelgroepen.xml`). A leaf category that cannot be resolved to a main category, a main category missing from the mapping file, or one mapped with an empty `AFAS-id`, causes the article — and its whole opportunity — to be skipped with a WARNING (watermark held for retry). See `Get-AfasArtikelgroep` (now takes `-CategoryParentMap`) / `New-AfasArtikel` and Flow 2 step 2b.
+> - `Grp` (artikelgroep, **required**) is resolved via a **two-hop main-category lookup**: the quote line's leaf `category.id` is walked up to its main (root) category by `Get-SalesbuildrMainCategoryId`, using the parent map built at startup by `Get-SalesbuildrCategoryParentMap` (`GET /public-api/category`, flat list, keyed by `parentCategoryId`); that main-category id is then looked up in `configs/mapping-artikelgroepen.xml` (`<categorie SB-maincat-id="..." AFAS-id="..." AFAS-naam="..."/>`) → `Grp`. See [Salesbuildr_API_Guide.md](Salesbuildr_API_Guide.md#article-group-grp-via-configsmapping-artikelgroepenxml) for the full two-hop mechanism. `configs/config.xml`'s old `<artikelgroepmapping><costcenter>` block remains removed (superseded by `configs/mapping-artikelgroepen.xml`). A leaf category that cannot be resolved to a main category, a main category missing from the mapping file, or one mapped with an empty `AFAS-id`, causes Flow 2 to skip creating that article, with a WARNING (its watermark held for retry) — the article then stays missing in AFAS, so Flow 3 subsequently detects it via its own existence check and skips the whole opportunities that reference it. See `Get-AfasArtikelgroep` (now takes `-CategoryParentMap`) / `New-AfasArtikel` and Flow 2 (Items).
 > - `BiUn` = `"St"` and `VaRc` = `"2"` — fixed placeholders for now.
 > - The OLD fields `Ds_1043`, `VaTp`, `BiSt`, `CoLa`, `Bl` are no longer sent.
+
+### Attach the SB quote PDF as a dossieritem (`KnSubject`, `POST`, Flow 4)
+
+Triggered for a closed **Won** Opportunity (approved primary quote) once its AFAS quotation (`KnQuotation`) already exists — created by Flow 3, checked the same way (`Get-AfasQuotation` filtering `Salesbuildr_Voorcalculatie.offerte = {ForecastId}`). If the quotation doesn't exist yet, Flow 4 holds its watermark and retries next run instead of attaching a PDF to nothing.
+
+**Idempotency check first** — `Get-AfasQuotationAttachment` filters `Salesbuildr_Dossieritems` on `Offerte`:
+
+```
+GET /connectors/Salesbuildr_Dossieritems?filterfieldids=Offerte&filtervalues=11310&operatortypes=1&skip=0&take=100
+```
+
+A returned row with `Type == StId` (the configured dossieritemtype, e.g. `46`) and `Ja_Nee == true` means the PDF is already attached — Flow 4 skips this opportunity. This check is required because, unlike Flow 1's and Flow 3's `PUT`s, the `KnSubject` `POST` below is **not** idempotent: re-running it would create a duplicate attachment.
+
+**PDF fetch** — `Get-SalesbuildrQuotePdf -QuoteId` does `GET /public-api/quote/{id}/pdf` (see [Salesbuildr_API_Guide.md](Salesbuildr_API_Guide.md#quote)) via `Invoke-WebRequest` directly, **not** the JSON wrapper `Invoke-SalesbuildrRequest` (which would corrupt the binary via `ConvertFrom-Json`); reads `RawContentStream.ToArray()` and Base64-encodes it. HTTP 404 or an empty response returns `$null` (logged WARNING, watermark held).
+
+**Create the dossieritem:**
+
+```json
+{ "KnSubject": { "Element": {
+    "Fields": { "StId": 46, "Ds": "SB Offerte - 11310", "Da": "2026-07-14T10:00", "UsId": "53307._sa_salesbldr" },
+    "Objects": [
+      { "KnSubjectLink": { "Element": { "Fields": {
+          "ToSR": true, "SfTp": 4, "SfId": "10654", "QuId": "11310"
+      }}}},
+      { "KnSubjectAttachment": { "Element": { "Fields": {
+          "FileName": "SB-Offerte-11310.pdf", "FileStream": "{base64_encoded_pdf}"
+      }}}}
+    ]
+}}}
+```
+
+- `StId` = dossieritemtype, from `configs/config.xml`'s `<afas><kn_subject_stid>` (default `46`).
+- `Ds` = `"SB Offerte - {ForecastId}"`.
+- `Da` = current datetime (`yyyy-MM-ddTHH:mm`), like `KnQuotation.QuDa`/`CmForecast.DaSc` a placeholder — revisit later for a real timestamp.
+- `UsId` = AFAS user id, from `configs/config.xml`'s `<afas><kn_subject_usid>` (default `53307._sa_salesbldr`).
+- `KnSubjectLink.SfTp` = `4` always; `SfId` = the verkooprelatie (AFAS `PrId`); `QuId` = the AFAS `forecast` id (`Offerte`/`KnQuotation.QuId`) — both parsed from the Opportunity's `externalIdentifier` via `ConvertFrom-ForecastExternalId`, no re-fetch.
+- `KnSubjectAttachment.FileName` = `"SB-Offerte-{ForecastId}.pdf"`; `FileStream` = the Base64 PDF from `Get-SalesbuildrQuotePdf`.
+- Function names: `Get-AfasQuotationAttachment` (idempotency check), `New-AfasSubjectAttachment` (creates the dossieritem).
 
 ---
 
