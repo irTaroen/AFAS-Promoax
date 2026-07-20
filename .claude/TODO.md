@@ -25,13 +25,16 @@ losse `TODO`-opmerkingen die verspreid in de code stonden (zie *Herkomst* per it
 - [x] Text-item voor ontbrekende artikelen
 - [x] Werksoort: `mpn` is leeg en intern product-id gebruiken
 - [x] Cost center-id mappen aan cost center-naam en AFAS-artikelgroep
-
+- [ ] Uitbesteden aan ( VRIJ VELD)op de voorcalculatieregel. Dit is de inkooprelatie. Check SB api
+- [ ] Werkmaatschappy (VRIJ VELD) op de voorcalculatieregel vanuit de Forecast. Tabel heet Groeperingsoort
+- [ ] Adminsitratie vanuit voorcalc kopplen. Is dit mogelijk?
+- [x] Status offerte op voorcalc ook vullen
 ## AFAS
 
 - [ ] Productieomgeving voorbereiden
-- [ ] Dossieritem inrichten
 - [ ] TXT artiekel aanmaken
-- [ ] **Offerte-PDF uploaden naar AFAS** — wacht op payload van de gebruiker. De base64
+- [ ] Dossieritem inrichten
+- [x] **Offerte-PDF uploaden naar AFAS** — wacht op payload van de gebruiker. De base64
   zit in `$Pdf.Base64`, met de AFAS-sleutels `$Item.PrId` (verkooprelatie) en
   `$Item.QuId` (quotation-id). Bouw de aangeleverde payload en POST die naar de juiste
   AFAS UpdateConnector (bv. via een `Send-AfasQuotationPdf`-helper). — *herkomst: `SB_PDF.ps1:402`*

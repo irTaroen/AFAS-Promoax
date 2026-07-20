@@ -647,19 +647,20 @@ function New-AfasQuotation {
         }
         else {
             $isWerksoort = ($_.Soort -eq '1')
-            @{
-                Fields = @{
-                    VaIt = if ($_.Soort) { $_.Soort } else { "2" }   # 2=artikel, 1=werksoort
-                    ItCd = $_.ItemCode
-                    UnId = if ($isWerksoort) { "" } else { "St" }    # werksoort: geen eenheid; artikel: stuks
-                    QuUn = ([double]$_.Aantal).ToString($inv)
-                    Qu   = ([double]$_.Aantal).ToString($inv)
-                    QuSa = ([double]$_.Aantal).ToString($inv)
-                    Upri = ([double]$_.Prijs).ToString($inv)
-                    # Werksoorten hebben ALTIJD kostprijs 0; artikelen dragen hun eigen kostprijs.
-                    AmCo = if ($isWerksoort) { "0" } else { ([double]$_.Kostprijs).ToString($inv) }
-                }
+            $fields = @{
+                VaIt = if ($_.Soort) { $_.Soort } else { "2" }   # 2=artikel, 1=werksoort
+                ItCd = $_.ItemCode
+                UnId = if ($isWerksoort) { "" } else { "St" }    # werksoort: geen eenheid; artikel: stuks
+                QuUn = ([double]$_.Aantal).ToString($inv)
+                Qu   = ([double]$_.Aantal).ToString($inv)
+                QuSa = ([double]$_.Aantal).ToString($inv)
+                Upri = ([double]$_.Prijs).ToString($inv)
+                # Werksoorten hebben ALTIJD kostprijs 0; artikelen dragen hun eigen kostprijs.
+                AmCo = if ($isWerksoort) { "0" } else { ([double]$_.Kostprijs).ToString($inv) }
             }
+            # Werksoort-regel (VaIt=1) draagt een extra veld StId = "N".
+            if ($isWerksoort) { $fields.StId = "N" }
+            @{ Fields = $fields }
         }
     })
 
@@ -685,6 +686,8 @@ function New-AfasQuotation {
     }
 
     Write-Log INFO "AFAS-quotation aanmaken: $QuId (Forecast SqNo: $FcNo, $($Regels.Count) regel(s))"
+    # DEBUG: de volledige payload die naar AFAS gestuurd wordt (zelfde serialisatie als Invoke-AfasUpdateConnector, Depth 10).
+    Write-Log INFO "AFAS-quotation payload:`n$($body | ConvertTo-Json -Depth 10)"
     Invoke-AfasUpdateConnector -Connector $Connector -Body $body
 }
 
