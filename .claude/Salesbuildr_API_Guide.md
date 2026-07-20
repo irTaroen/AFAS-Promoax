@@ -1,6 +1,6 @@
 # Salesbuildr Public API — Usage Guide
 
-> **Schema reference:** All request/response schemas described in this guide are defined in [`openapi.json`](openapi.json). JSON pointer format: `openapi.json#/components/schemas/<SchemaName>`.
+> **Schema reference:** All request/response schemas described in this guide are defined in [`openapi.json`](../docs/api/openapi.json). JSON pointer format: `openapi.json#/components/schemas/<SchemaName>`.
 
 ---
 
@@ -34,7 +34,7 @@ Every request requires an API key header.
 api-key: YOUR_API_KEY_HERE
 ```
 
-The OpenAPI security scheme is defined at [`openapi.json#/components/securitySchemes/ApiKey`](openapi.json#/components/securitySchemes/ApiKey).
+The OpenAPI security scheme is defined at [`openapi.json#/components/securitySchemes/ApiKey`](../docs/api/openapi.json#/components/securitySchemes/ApiKey).
 
 ---
 
@@ -102,40 +102,40 @@ Violations may result in access restrictions or account suspension.
 
 ### Company
 
-Schema definitions: [`CreateCompanyDto`](openapi.json#/components/schemas/CreateCompanyDto) · [`UpdateCompanyDto`](openapi.json#/components/schemas/UpdateCompanyDto) · [`CompanyResponseDto`](openapi.json#/components/schemas/CompanyResponseDto)
+Schema definitions: [`CreateCompanyDto`](../docs/api/openapi.json#/components/schemas/CreateCompanyDto) · [`UpdateCompanyDto`](../docs/api/openapi.json#/components/schemas/UpdateCompanyDto) · [`CompanyResponseDto`](../docs/api/openapi.json#/components/schemas/CompanyResponseDto)
 
 | Method | Path | Summary | Request Body | Response |
 |---|---|---|---|---|
-| `GET` | `/public-api/company` | Search | — | [`CompanyResponseDto`](openapi.json#/components/schemas/CompanyResponseDto) |
-| `POST` | `/public-api/company` | Create | [`CreateCompanyDto`](openapi.json#/components/schemas/CreateCompanyDto) | `201` CompanyResponseDto |
-| `GET` | `/public-api/company/{id}` | Get | — | [`CompanyResponseDto`](openapi.json#/components/schemas/CompanyResponseDto) |
-| `PUT` | `/public-api/company/{id}` | Update | [`UpdateCompanyDto`](openapi.json#/components/schemas/UpdateCompanyDto) | [`CompanyResponseDto`](openapi.json#/components/schemas/CompanyResponseDto) |
+| `GET` | `/public-api/company` | Search | — | [`CompanyResponseDto`](../docs/api/openapi.json#/components/schemas/CompanyResponseDto) |
+| `POST` | `/public-api/company` | Create | [`CreateCompanyDto`](../docs/api/openapi.json#/components/schemas/CreateCompanyDto) | `201` CompanyResponseDto |
+| `GET` | `/public-api/company/{id}` | Get | — | [`CompanyResponseDto`](../docs/api/openapi.json#/components/schemas/CompanyResponseDto) |
+| `PUT` | `/public-api/company/{id}` | Update | [`UpdateCompanyDto`](../docs/api/openapi.json#/components/schemas/UpdateCompanyDto) | [`CompanyResponseDto`](../docs/api/openapi.json#/components/schemas/CompanyResponseDto) |
 | `DELETE` | `/public-api/company/{id}` | Delete | — | `204` |
-| `GET` | `/public-api/company/ext/{externalIdentifier}` | Get by ext ID | — | [`CompanyResponseDto`](openapi.json#/components/schemas/CompanyResponseDto) |
-| `PUT` | `/public-api/company/ext/{externalIdentifier}` | Upsert by ext ID | [`UpdateCompanyDto`](openapi.json#/components/schemas/UpdateCompanyDto) | `200/201` CompanyResponseDto |
+| `GET` | `/public-api/company/ext/{externalIdentifier}` | Get by ext ID | — | [`CompanyResponseDto`](../docs/api/openapi.json#/components/schemas/CompanyResponseDto) |
+| `PUT` | `/public-api/company/ext/{externalIdentifier}` | Upsert by ext ID | [`UpdateCompanyDto`](../docs/api/openapi.json#/components/schemas/UpdateCompanyDto) | `200/201` CompanyResponseDto |
 | `DELETE` | `/public-api/company/ext/{externalIdentifier}` | Delete by ext ID | — | `200` |
 
 **Required fields for create/update:** `name`, `number`, `type`
 
-**Notable optional fields:** `address` ([`AddressDto`](openapi.json#/components/schemas/AddressDto)), `deliveryAddresses`, `quotePaymentTermId`, `parentCompanyId`, `accountManagerId`, `currency`, `labels`, `customFields`
+**Notable optional fields:** `address` ([`AddressDto`](../docs/api/openapi.json#/components/schemas/AddressDto)), `deliveryAddresses`, `quotePaymentTermId`, `parentCompanyId`, `accountManagerId`, `currency`, `labels`, `customFields`
 
 ---
 
 ### Contact
 
-Schema definitions: [`CreateContactDto`](openapi.json#/components/schemas/CreateContactDto) · [`UpdateContactDto`](openapi.json#/components/schemas/UpdateContactDto) · [`UpsertContactDto`](openapi.json#/components/schemas/UpsertContactDto) · [`ContactResponseDto`](openapi.json#/components/schemas/ContactResponseDto)
+Schema definitions: [`CreateContactDto`](../docs/api/openapi.json#/components/schemas/CreateContactDto) · [`UpdateContactDto`](../docs/api/openapi.json#/components/schemas/UpdateContactDto) · [`UpsertContactDto`](../docs/api/openapi.json#/components/schemas/UpsertContactDto) · [`ContactResponseDto`](../docs/api/openapi.json#/components/schemas/ContactResponseDto)
 
 | Method | Path | Summary | Request Body | Response |
 |---|---|---|---|---|
 | `GET` | `/public-api/contact` | Search contacts | — | `ContactResponseDto[]` |
-| `POST` | `/public-api/contact` | Create | [`CreateContactDto`](openapi.json#/components/schemas/CreateContactDto) | `201` |
-| `GET` | `/public-api/contact/{id}` | Get | — | [`ContactResponseDto`](openapi.json#/components/schemas/ContactResponseDto) |
-| `PUT` | `/public-api/contact/{id}` | Update | [`UpdateContactDto`](openapi.json#/components/schemas/UpdateContactDto) | `200` |
+| `POST` | `/public-api/contact` | Create | [`CreateContactDto`](../docs/api/openapi.json#/components/schemas/CreateContactDto) | `201` |
+| `GET` | `/public-api/contact/{id}` | Get | — | [`ContactResponseDto`](../docs/api/openapi.json#/components/schemas/ContactResponseDto) |
+| `PUT` | `/public-api/contact/{id}` | Update | [`UpdateContactDto`](../docs/api/openapi.json#/components/schemas/UpdateContactDto) | `200` |
 | `DELETE` | `/public-api/contact/{id}` | Delete by ID | — | `200` |
 | `PUT` | `/public-api/contact/{id}/undelete` | Undelete by ID | — | `200` |
-| `PUT` | `/public-api/contact/by-email` | Upsert by email | [`CreateContactDto`](openapi.json#/components/schemas/CreateContactDto) | `200` |
+| `PUT` | `/public-api/contact/by-email` | Upsert by email | [`CreateContactDto`](../docs/api/openapi.json#/components/schemas/CreateContactDto) | `200` |
 | `GET` | `/public-api/contact/ext/{externalIdentifier}` | Get by ext ID | — | `200` |
-| `PUT` | `/public-api/contact/ext/{externalIdentifier}` | Upsert by ext ID | [`UpsertContactDto`](openapi.json#/components/schemas/UpsertContactDto) | `200` |
+| `PUT` | `/public-api/contact/ext/{externalIdentifier}` | Upsert by ext ID | [`UpsertContactDto`](../docs/api/openapi.json#/components/schemas/UpsertContactDto) | `200` |
 | `DELETE` | `/public-api/contact/ext/{externalIdentifier}` | Delete by ext ID | — | `200` |
 | `PUT` | `/public-api/contact/ext/{externalIdentifier}/undelete` | Undelete by ext ID | — | `200` |
 
@@ -147,16 +147,16 @@ Schema definitions: [`CreateContactDto`](openapi.json#/components/schemas/Create
 
 ### Opportunity
 
-Schema definitions: [`CreateOpportunityPublicDto`](openapi.json#/components/schemas/CreateOpportunityPublicDto) · [`UpdateOpportunityPublicDto`](openapi.json#/components/schemas/UpdateOpportunityPublicDto) · [`UpsertOpportunityDto`](openapi.json#/components/schemas/UpsertOpportunityDto) · [`OpportunityResponseDto`](openapi.json#/components/schemas/OpportunityResponseDto)
+Schema definitions: [`CreateOpportunityPublicDto`](../docs/api/openapi.json#/components/schemas/CreateOpportunityPublicDto) · [`UpdateOpportunityPublicDto`](../docs/api/openapi.json#/components/schemas/UpdateOpportunityPublicDto) · [`UpsertOpportunityDto`](../docs/api/openapi.json#/components/schemas/UpsertOpportunityDto) · [`OpportunityResponseDto`](../docs/api/openapi.json#/components/schemas/OpportunityResponseDto)
 
 | Method | Path | Summary | Request Body | Response |
 |---|---|---|---|---|
 | `GET` | `/public-api/opportunity` | Search | — | `{ results: OpportunityResponseDto[], total, filters, sortOptions }` |
-| `POST` | `/public-api/opportunity` | Create | [`CreateOpportunityPublicDto`](openapi.json#/components/schemas/CreateOpportunityPublicDto) | `201` OpportunityResponseDto |
-| `GET` | `/public-api/opportunity/{id}` | Get by ID | — | [`OpportunityResponseDto`](openapi.json#/components/schemas/OpportunityResponseDto) |
-| `PUT` | `/public-api/opportunity/{id}` | Update | [`UpdateOpportunityPublicDto`](openapi.json#/components/schemas/UpdateOpportunityPublicDto) | [`OpportunityResponseDto`](openapi.json#/components/schemas/OpportunityResponseDto) |
-| `GET` | `/public-api/opportunity/ext/{externalIdentifier}` | Get by ext ID | — | [`OpportunityResponseDto`](openapi.json#/components/schemas/OpportunityResponseDto) |
-| `PUT` | `/public-api/opportunity/ext/{externalIdentifier}` | Upsert by ext ID | [`UpsertOpportunityDto`](openapi.json#/components/schemas/UpsertOpportunityDto) | `200/201` OpportunityResponseDto |
+| `POST` | `/public-api/opportunity` | Create | [`CreateOpportunityPublicDto`](../docs/api/openapi.json#/components/schemas/CreateOpportunityPublicDto) | `201` OpportunityResponseDto |
+| `GET` | `/public-api/opportunity/{id}` | Get by ID | — | [`OpportunityResponseDto`](../docs/api/openapi.json#/components/schemas/OpportunityResponseDto) |
+| `PUT` | `/public-api/opportunity/{id}` | Update | [`UpdateOpportunityPublicDto`](../docs/api/openapi.json#/components/schemas/UpdateOpportunityPublicDto) | [`OpportunityResponseDto`](../docs/api/openapi.json#/components/schemas/OpportunityResponseDto) |
+| `GET` | `/public-api/opportunity/ext/{externalIdentifier}` | Get by ext ID | — | [`OpportunityResponseDto`](../docs/api/openapi.json#/components/schemas/OpportunityResponseDto) |
+| `PUT` | `/public-api/opportunity/ext/{externalIdentifier}` | Upsert by ext ID | [`UpsertOpportunityDto`](../docs/api/openapi.json#/components/schemas/UpsertOpportunityDto) | `200/201` OpportunityResponseDto |
 | `POST` | `/public-api/opportunity/ext/{externalIdentifier}/lose` | Mark as lost | — | `201` |
 | `POST` | `/public-api/opportunity/ext/{externalIdentifier}/win` | Mark as won | — | `201` |
 
@@ -168,19 +168,19 @@ Schema definitions: [`CreateOpportunityPublicDto`](openapi.json#/components/sche
 
 ### Product
 
-Schema definitions: [`CreateProductPublicDto`](openapi.json#/components/schemas/CreateProductPublicDto) · [`UpsertProductDto`](openapi.json#/components/schemas/UpsertProductDto) · [`ProductResponseDto`](openapi.json#/components/schemas/ProductResponseDto) · [`BulkUpsertProductsDto`](openapi.json#/components/schemas/BulkUpsertProductsDto) · [`PutProductInventoriesDto`](openapi.json#/components/schemas/PutProductInventoriesDto)
+Schema definitions: [`CreateProductPublicDto`](../docs/api/openapi.json#/components/schemas/CreateProductPublicDto) · [`UpsertProductDto`](../docs/api/openapi.json#/components/schemas/UpsertProductDto) · [`ProductResponseDto`](../docs/api/openapi.json#/components/schemas/ProductResponseDto) · [`BulkUpsertProductsDto`](../docs/api/openapi.json#/components/schemas/BulkUpsertProductsDto) · [`PutProductInventoriesDto`](../docs/api/openapi.json#/components/schemas/PutProductInventoriesDto)
 
 | Method | Path | Summary | Request Body | Response |
 |---|---|---|---|---|
 | `GET` | `/public-api/product` | Search | — | `{ results: ProductResponseDto[], total, filters, sortOptions }` |
-| `POST` | `/public-api/product` | Create product | [`CreateProductPublicDto`](openapi.json#/components/schemas/CreateProductPublicDto) | [`ProductResponseDto`](openapi.json#/components/schemas/ProductResponseDto) |
-| `POST` | `/public-api/product/batch` | Create products in batch (max 100) | [`BulkUpsertProductsDto`](openapi.json#/components/schemas/BulkUpsertProductsDto) | [`BatchProductsResponseDto`](openapi.json#/components/schemas/BatchProductsResponseDto) |
-| `GET` | `/public-api/product/{id}` | Get product by ID | — | [`ProductResponseDto`](openapi.json#/components/schemas/ProductResponseDto) |
-| `PUT` | `/public-api/product/{id}` | Update product | [`UpsertProductDto`](openapi.json#/components/schemas/UpsertProductDto) | [`ProductResponseDto`](openapi.json#/components/schemas/ProductResponseDto) |
+| `POST` | `/public-api/product` | Create product | [`CreateProductPublicDto`](../docs/api/openapi.json#/components/schemas/CreateProductPublicDto) | [`ProductResponseDto`](../docs/api/openapi.json#/components/schemas/ProductResponseDto) |
+| `POST` | `/public-api/product/batch` | Create products in batch (max 100) | [`BulkUpsertProductsDto`](../docs/api/openapi.json#/components/schemas/BulkUpsertProductsDto) | [`BatchProductsResponseDto`](../docs/api/openapi.json#/components/schemas/BatchProductsResponseDto) |
+| `GET` | `/public-api/product/{id}` | Get product by ID | — | [`ProductResponseDto`](../docs/api/openapi.json#/components/schemas/ProductResponseDto) |
+| `PUT` | `/public-api/product/{id}` | Update product | [`UpsertProductDto`](../docs/api/openapi.json#/components/schemas/UpsertProductDto) | [`ProductResponseDto`](../docs/api/openapi.json#/components/schemas/ProductResponseDto) |
 | `DELETE` | `/public-api/product/{id}` | Delete product | — | `200` / `409` if used in quote |
-| `PUT` | `/public-api/product/{id}/inventory` | Replace inventories | [`PutProductInventoriesDto`](openapi.json#/components/schemas/PutProductInventoriesDto) | `200` |
-| `GET` | `/public-api/product/ext/{externalIdentifier}` | Get by ext ID | — | [`ProductResponseDto`](openapi.json#/components/schemas/ProductResponseDto) |
-| `PUT` | `/public-api/product/ext/{externalIdentifier}` | Upsert by ext ID | [`UpsertProductDto`](openapi.json#/components/schemas/UpsertProductDto) | `200/201` ProductResponseDto |
+| `PUT` | `/public-api/product/{id}/inventory` | Replace inventories | [`PutProductInventoriesDto`](../docs/api/openapi.json#/components/schemas/PutProductInventoriesDto) | `200` |
+| `GET` | `/public-api/product/ext/{externalIdentifier}` | Get by ext ID | — | [`ProductResponseDto`](../docs/api/openapi.json#/components/schemas/ProductResponseDto) |
+| `PUT` | `/public-api/product/ext/{externalIdentifier}` | Upsert by ext ID | [`UpsertProductDto`](../docs/api/openapi.json#/components/schemas/UpsertProductDto) | `200/201` ProductResponseDto |
 | `DELETE` | `/public-api/product/ext/{externalIdentifier}` | Delete by ext ID | — | `200` / `409` if used in quote |
 
 **Required fields for create:** `name`, `categoryId`
@@ -193,14 +193,14 @@ Schema definitions: [`CreateProductPublicDto`](openapi.json#/components/schemas/
 
 ### Quote
 
-Schema definitions: [`CreateQuoteDto`](openapi.json#/components/schemas/CreateQuoteDto) · [`QuoteResponseDto`](openapi.json#/components/schemas/QuoteResponseDto)
+Schema definitions: [`CreateQuoteDto`](../docs/api/openapi.json#/components/schemas/CreateQuoteDto) · [`QuoteResponseDto`](../docs/api/openapi.json#/components/schemas/QuoteResponseDto)
 
 | Method | Path | Summary | Request Body | Response |
 |---|---|---|---|---|
 | `GET` | `/public-api/quote` | Search | — | `{ results: QuoteResponseDto[], total, filters, sortOptions }` |
-| `POST` | `/public-api/quote` | Create draft quote | [`CreateQuoteDto`](openapi.json#/components/schemas/CreateQuoteDto) | `201` [`QuoteResponseDto`](openapi.json#/components/schemas/QuoteResponseDto) |
-| `POST` | `/public-api/quote/approved` | Create approved quote | [`CreateQuoteDto`](openapi.json#/components/schemas/CreateQuoteDto) | `201` QuoteResponseDto |
-| `GET` | `/public-api/quote/{id}` | Get quote | — | [`QuoteResponseDto`](openapi.json#/components/schemas/QuoteResponseDto) |
+| `POST` | `/public-api/quote` | Create draft quote | [`CreateQuoteDto`](../docs/api/openapi.json#/components/schemas/CreateQuoteDto) | `201` [`QuoteResponseDto`](../docs/api/openapi.json#/components/schemas/QuoteResponseDto) |
+| `POST` | `/public-api/quote/approved` | Create approved quote | [`CreateQuoteDto`](../docs/api/openapi.json#/components/schemas/CreateQuoteDto) | `201` QuoteResponseDto |
+| `GET` | `/public-api/quote/{id}` | Get quote | — | [`QuoteResponseDto`](../docs/api/openapi.json#/components/schemas/QuoteResponseDto) |
 | `GET` | `/public-api/quote/{id}/pdf` | Download quote PDF | — | PDF file |
 | `GET` | `/public-api/quote/{id}/attachment/{title}` | Download attachment | — | Attachment file |
 
@@ -208,23 +208,23 @@ Schema definitions: [`CreateQuoteDto`](openapi.json#/components/schemas/CreateQu
 
 **Required fields for create:** `opportunityId`, `title`
 
-**Optional fields:** `templateId`, `products` (array of `{ id, quantity }` — see [`CreateQuoteProductDto`](openapi.json#/components/schemas/CreateQuoteProductDto))
+**Optional fields:** `templateId`, `products` (array of `{ id, quantity }` — see [`CreateQuoteProductDto`](../docs/api/openapi.json#/components/schemas/CreateQuoteProductDto))
 
-**Quote response includes:** `status`, `items` ([`QuoteItemResponseDto`](openapi.json#/components/schemas/QuoteItemResponseDto)), `approvers`, `deliveryAddress`, `paymentTerm`, `shippingType`, `discount` ([`QuoteDiscountResponseDto`](openapi.json#/components/schemas/QuoteDiscountResponseDto)), `attachments`, `formFields`, `opportunity`, `contact`, `company`, `owner`, `link`
+**Quote response includes:** `status`, `items` ([`QuoteItemResponseDto`](../docs/api/openapi.json#/components/schemas/QuoteItemResponseDto)), `approvers`, `deliveryAddress`, `paymentTerm`, `shippingType`, `discount` ([`QuoteDiscountResponseDto`](../docs/api/openapi.json#/components/schemas/QuoteDiscountResponseDto)), `attachments`, `formFields`, `opportunity`, `contact`, `company`, `owner`, `link`
 
 ---
 
 ### Quote Template
 
-Schema definitions: [`CreateQuoteTemplatePublicDto`](openapi.json#/components/schemas/CreateQuoteTemplatePublicDto) · [`UpdateQuoteTemplatePublicDto`](openapi.json#/components/schemas/UpdateQuoteTemplatePublicDto) · [`QuoteTemplateResponseDto`](openapi.json#/components/schemas/QuoteTemplateResponseDto)
+Schema definitions: [`CreateQuoteTemplatePublicDto`](../docs/api/openapi.json#/components/schemas/CreateQuoteTemplatePublicDto) · [`UpdateQuoteTemplatePublicDto`](../docs/api/openapi.json#/components/schemas/UpdateQuoteTemplatePublicDto) · [`QuoteTemplateResponseDto`](../docs/api/openapi.json#/components/schemas/QuoteTemplateResponseDto)
 
 | Method | Path | Summary | Request Body | Response |
 |---|---|---|---|---|
 | `GET` | `/public-api/quote-template` | Get all templates | — | `QuoteTemplateResponseDto[]` |
-| `POST` | `/public-api/quote-template` | Create template | [`CreateQuoteTemplatePublicDto`](openapi.json#/components/schemas/CreateQuoteTemplatePublicDto) | `201` QuoteTemplateResponseDto |
-| `GET` | `/public-api/quote-template/{id}` | Get single template | — | [`QuoteTemplateResponseDto`](openapi.json#/components/schemas/QuoteTemplateResponseDto) |
-| `PUT` | `/public-api/quote-template/{id}` | Update template | [`UpdateQuoteTemplatePublicDto`](openapi.json#/components/schemas/UpdateQuoteTemplatePublicDto) | QuoteTemplateResponseDto |
-| `POST` | `/public-api/quote-template/validate` | Validate template data | [`CreateQuoteTemplatePublicDto`](openapi.json#/components/schemas/CreateQuoteTemplatePublicDto) | `200` validated data |
+| `POST` | `/public-api/quote-template` | Create template | [`CreateQuoteTemplatePublicDto`](../docs/api/openapi.json#/components/schemas/CreateQuoteTemplatePublicDto) | `201` QuoteTemplateResponseDto |
+| `GET` | `/public-api/quote-template/{id}` | Get single template | — | [`QuoteTemplateResponseDto`](../docs/api/openapi.json#/components/schemas/QuoteTemplateResponseDto) |
+| `PUT` | `/public-api/quote-template/{id}` | Update template | [`UpdateQuoteTemplatePublicDto`](../docs/api/openapi.json#/components/schemas/UpdateQuoteTemplatePublicDto) | QuoteTemplateResponseDto |
+| `POST` | `/public-api/quote-template/validate` | Validate template data | [`CreateQuoteTemplatePublicDto`](../docs/api/openapi.json#/components/schemas/CreateQuoteTemplatePublicDto) | `200` validated data |
 
 **Required fields for create:** `name`
 
@@ -236,16 +236,16 @@ Schema definitions: [`CreateQuoteTemplatePublicDto`](openapi.json#/components/sc
 
 ### Quote Widget Template
 
-Schema definitions: [`CreateQuoteWidgetTemplatePublicDto`](openapi.json#/components/schemas/CreateQuoteWidgetTemplatePublicDto) · [`UpdateQuoteWidgetTemplatePublicDto`](openapi.json#/components/schemas/UpdateQuoteWidgetTemplatePublicDto) · [`QuoteWidgetTemplateResponseDto`](openapi.json#/components/schemas/QuoteWidgetTemplateResponseDto)
+Schema definitions: [`CreateQuoteWidgetTemplatePublicDto`](../docs/api/openapi.json#/components/schemas/CreateQuoteWidgetTemplatePublicDto) · [`UpdateQuoteWidgetTemplatePublicDto`](../docs/api/openapi.json#/components/schemas/UpdateQuoteWidgetTemplatePublicDto) · [`QuoteWidgetTemplateResponseDto`](../docs/api/openapi.json#/components/schemas/QuoteWidgetTemplateResponseDto)
 
 | Method | Path | Summary | Request Body | Response |
 |---|---|---|---|---|
 | `GET` | `/public-api/quote-widget-template` | Get all widget templates | — | `QuoteWidgetTemplateResponseDto[]` |
-| `POST` | `/public-api/quote-widget-template` | Create widget template | [`CreateQuoteWidgetTemplatePublicDto`](openapi.json#/components/schemas/CreateQuoteWidgetTemplatePublicDto) | `201` QuoteWidgetTemplateResponseDto |
-| `GET` | `/public-api/quote-widget-template/{id}` | Get single widget template | — | [`QuoteWidgetTemplateResponseDto`](openapi.json#/components/schemas/QuoteWidgetTemplateResponseDto) |
-| `PUT` | `/public-api/quote-widget-template/{id}` | Update widget template | [`UpdateQuoteWidgetTemplatePublicDto`](openapi.json#/components/schemas/UpdateQuoteWidgetTemplatePublicDto) | QuoteWidgetTemplateResponseDto |
+| `POST` | `/public-api/quote-widget-template` | Create widget template | [`CreateQuoteWidgetTemplatePublicDto`](../docs/api/openapi.json#/components/schemas/CreateQuoteWidgetTemplatePublicDto) | `201` QuoteWidgetTemplateResponseDto |
+| `GET` | `/public-api/quote-widget-template/{id}` | Get single widget template | — | [`QuoteWidgetTemplateResponseDto`](../docs/api/openapi.json#/components/schemas/QuoteWidgetTemplateResponseDto) |
+| `PUT` | `/public-api/quote-widget-template/{id}` | Update widget template | [`UpdateQuoteWidgetTemplatePublicDto`](../docs/api/openapi.json#/components/schemas/UpdateQuoteWidgetTemplatePublicDto) | QuoteWidgetTemplateResponseDto |
 | `DELETE` | `/public-api/quote-widget-template/{id}` | Delete widget template | — | `204` / `409` if linked to quote templates |
-| `POST` | `/public-api/quote-widget-template/validate` | Validate widget data | [`CreateQuoteWidgetTemplatePublicDto`](openapi.json#/components/schemas/CreateQuoteWidgetTemplatePublicDto) | `200` validated data |
+| `POST` | `/public-api/quote-widget-template/validate` | Validate widget data | [`CreateQuoteWidgetTemplatePublicDto`](../docs/api/openapi.json#/components/schemas/CreateQuoteWidgetTemplatePublicDto) | `200` validated data |
 
 > Add `?force=true` to DELETE to remove even if linked to quote templates.
 
@@ -253,29 +253,29 @@ Schema definitions: [`CreateQuoteWidgetTemplatePublicDto`](openapi.json#/compone
 
 ### Pricing Book
 
-Schema definitions: [`UpdatePricingBookPublicDto`](openapi.json#/components/schemas/UpdatePricingBookPublicDto) · [`PricingBookResponseDto`](openapi.json#/components/schemas/PricingBookResponseDto) · [`PricingBookProductPublicDto`](openapi.json#/components/schemas/PricingBookProductPublicDto)
+Schema definitions: [`UpdatePricingBookPublicDto`](../docs/api/openapi.json#/components/schemas/UpdatePricingBookPublicDto) · [`PricingBookResponseDto`](../docs/api/openapi.json#/components/schemas/PricingBookResponseDto) · [`PricingBookProductPublicDto`](../docs/api/openapi.json#/components/schemas/PricingBookProductPublicDto)
 
 | Method | Path | Summary | Request Body | Response |
 |---|---|---|---|---|
 | `GET` | `/public-api/pricing-book` | Get all pricing books | — | `PricingBookResponseDto[]` |
-| `POST` | `/public-api/pricing-book` | Create pricing book | [`UpdatePricingBookPublicDto`](openapi.json#/components/schemas/UpdatePricingBookPublicDto) | `201` PricingBookResponseDto |
-| `GET` | `/public-api/pricing-book/{id}` | Get pricing book by ID | — | [`PricingBookResponseDto`](openapi.json#/components/schemas/PricingBookResponseDto) |
-| `PUT` | `/public-api/pricing-book/{id}` | Update pricing book | [`UpdatePricingBookPublicDto`](openapi.json#/components/schemas/UpdatePricingBookPublicDto) | PricingBookResponseDto |
+| `POST` | `/public-api/pricing-book` | Create pricing book | [`UpdatePricingBookPublicDto`](../docs/api/openapi.json#/components/schemas/UpdatePricingBookPublicDto) | `201` PricingBookResponseDto |
+| `GET` | `/public-api/pricing-book/{id}` | Get pricing book by ID | — | [`PricingBookResponseDto`](../docs/api/openapi.json#/components/schemas/PricingBookResponseDto) |
+| `PUT` | `/public-api/pricing-book/{id}` | Update pricing book | [`UpdatePricingBookPublicDto`](../docs/api/openapi.json#/components/schemas/UpdatePricingBookPublicDto) | PricingBookResponseDto |
 
 **Required fields:** `name`, `description`, `specialBidNumber`, `companyIds[]`, `classificationIds[]`, `products[]`
 
-Each product entry ([`PricingBookProductPublicDto`](openapi.json#/components/schemas/PricingBookProductPublicDto)): `productId`, `price`, `cost`, `validFrom`, `validTo`, `note`
+Each product entry ([`PricingBookProductPublicDto`](../docs/api/openapi.json#/components/schemas/PricingBookProductPublicDto)): `productId`, `price`, `cost`, `validFrom`, `validTo`, `note`
 
 ---
 
 ### Category
 
-Schema definitions: [`CategoryResponseDto`](openapi.json#/components/schemas/CategoryResponseDto) · [`RootCategoryResponseDto`](openapi.json#/components/schemas/RootCategoryResponseDto)
+Schema definitions: [`CategoryResponseDto`](../docs/api/openapi.json#/components/schemas/CategoryResponseDto) · [`RootCategoryResponseDto`](../docs/api/openapi.json#/components/schemas/RootCategoryResponseDto)
 
 | Method | Path | Summary | Response |
 |---|---|---|---|
-| `GET` | `/public-api/category` | Get all categories (flat list) | [`CategoryResponseDto[]`](openapi.json#/components/schemas/CategoryResponseDto) |
-| `GET` | `/public-api/category/tree` | Get all categories as tree | [`RootCategoryResponseDto[]`](openapi.json#/components/schemas/RootCategoryResponseDto) |
+| `GET` | `/public-api/category` | Get all categories (flat list) | [`CategoryResponseDto[]`](../docs/api/openapi.json#/components/schemas/CategoryResponseDto) |
+| `GET` | `/public-api/category/tree` | Get all categories as tree | [`RootCategoryResponseDto[]`](../docs/api/openapi.json#/components/schemas/RootCategoryResponseDto) |
 
 Add `?includeEmpty=true` to the tree endpoint to include categories with no products.
 
@@ -283,40 +283,40 @@ Add `?includeEmpty=true` to the tree endpoint to include categories with no prod
 
 ### Field
 
-Schema definitions: [`UpdatePublicFieldDto`](openapi.json#/components/schemas/UpdatePublicFieldDto) · [`FieldValuesResponseDto`](openapi.json#/components/schemas/FieldValuesResponseDto)
+Schema definitions: [`UpdatePublicFieldDto`](../docs/api/openapi.json#/components/schemas/UpdatePublicFieldDto) · [`FieldValuesResponseDto`](../docs/api/openapi.json#/components/schemas/FieldValuesResponseDto)
 
 | Method | Path | Summary | Request Body | Response |
 |---|---|---|---|---|
-| `GET` | `/public-api/field/{field}` | Get field and its values | — | [`FieldValuesResponseDto`](openapi.json#/components/schemas/FieldValuesResponseDto) |
-| `PUT` | `/public-api/field/{field}` | Replace field values | [`UpdatePublicFieldDto`](openapi.json#/components/schemas/UpdatePublicFieldDto) | `200` |
+| `GET` | `/public-api/field/{field}` | Get field and its values | — | [`FieldValuesResponseDto`](../docs/api/openapi.json#/components/schemas/FieldValuesResponseDto) |
+| `PUT` | `/public-api/field/{field}` | Replace field values | [`UpdatePublicFieldDto`](../docs/api/openapi.json#/components/schemas/UpdatePublicFieldDto) | `200` |
 
-Each field value ([`UpdatePublicFieldValueDto`](openapi.json#/components/schemas/UpdatePublicFieldValueDto)): `externalIdentifier`, `displayValue`, `isDefault`
+Each field value ([`UpdatePublicFieldValueDto`](../docs/api/openapi.json#/components/schemas/UpdatePublicFieldValueDto)): `externalIdentifier`, `displayValue`, `isDefault`
 
 ---
 
 ### Quote Discount Group
 
-Schema definitions: [`UpdateDiscountGroupDto`](openapi.json#/components/schemas/UpdateDiscountGroupDto) · [`DiscountGroupResponseDto`](openapi.json#/components/schemas/DiscountGroupResponseDto) · [`UpdateCompaniesDiscountGroupDto`](openapi.json#/components/schemas/UpdateCompaniesDiscountGroupDto)
+Schema definitions: [`UpdateDiscountGroupDto`](../docs/api/openapi.json#/components/schemas/UpdateDiscountGroupDto) · [`DiscountGroupResponseDto`](../docs/api/openapi.json#/components/schemas/DiscountGroupResponseDto) · [`UpdateCompaniesDiscountGroupDto`](../docs/api/openapi.json#/components/schemas/UpdateCompaniesDiscountGroupDto)
 
 | Method | Path | Summary | Request Body | Response |
 |---|---|---|---|---|
 | `GET` | `/public-api/quote-discount-group` | Get all discount groups | — | array |
-| `POST` | `/public-api/quote-discount-group` | Create new | [`UpdateDiscountGroupDto`](openapi.json#/components/schemas/UpdateDiscountGroupDto) | `201` DiscountGroupResponseDto |
-| `GET` | `/public-api/quote-discount-group/{id}` | Get by ID | — | [`DiscountGroupResponseDto`](openapi.json#/components/schemas/DiscountGroupResponseDto) |
-| `PUT` | `/public-api/quote-discount-group/{id}` | Update by ID | [`UpdateDiscountGroupDto`](openapi.json#/components/schemas/UpdateDiscountGroupDto) | DiscountGroupResponseDto |
-| `PUT` | `/public-api/quote-discount-group/{id}/companies` | Set companies for group | [`UpdateCompaniesDiscountGroupDto`](openapi.json#/components/schemas/UpdateCompaniesDiscountGroupDto) | `{ message: string }` |
+| `POST` | `/public-api/quote-discount-group` | Create new | [`UpdateDiscountGroupDto`](../docs/api/openapi.json#/components/schemas/UpdateDiscountGroupDto) | `201` DiscountGroupResponseDto |
+| `GET` | `/public-api/quote-discount-group/{id}` | Get by ID | — | [`DiscountGroupResponseDto`](../docs/api/openapi.json#/components/schemas/DiscountGroupResponseDto) |
+| `PUT` | `/public-api/quote-discount-group/{id}` | Update by ID | [`UpdateDiscountGroupDto`](../docs/api/openapi.json#/components/schemas/UpdateDiscountGroupDto) | DiscountGroupResponseDto |
+| `PUT` | `/public-api/quote-discount-group/{id}/companies` | Set companies for group | [`UpdateCompaniesDiscountGroupDto`](../docs/api/openapi.json#/components/schemas/UpdateCompaniesDiscountGroupDto) | `{ message: string }` |
 
 ---
 
 ### Sync State
 
-Schema definition: [`SyncStateDto`](openapi.json#/components/schemas/SyncStateDto)
+Schema definition: [`SyncStateDto`](../docs/api/openapi.json#/components/schemas/SyncStateDto)
 
 > This endpoint is **exempt from rate limiting**.
 
 | Method | Path | Summary | Request Body | Response |
 |---|---|---|---|---|
-| `PUT` | `/public-api/sync-state/{entityType}/{id}` | Report sync status | [`SyncStateDto`](openapi.json#/components/schemas/SyncStateDto) | `200` |
+| `PUT` | `/public-api/sync-state/{entityType}/{id}` | Report sync status | [`SyncStateDto`](../docs/api/openapi.json#/components/schemas/SyncStateDto) | `200` |
 
 **`entityType`** must be `"quote"` or `"product"`.
 
@@ -375,7 +375,7 @@ Content-Type: application/json
 }
 ```
 
-→ Schema: [`CreateCompanyDto`](openapi.json#/components/schemas/CreateCompanyDto)
+→ Schema: [`CreateCompanyDto`](../docs/api/openapi.json#/components/schemas/CreateCompanyDto)
 
 ---
 
@@ -401,7 +401,7 @@ Content-Type: application/json
 }
 ```
 
-→ Schema: [`CreateContactDto`](openapi.json#/components/schemas/CreateContactDto)
+→ Schema: [`CreateContactDto`](../docs/api/openapi.json#/components/schemas/CreateContactDto)
 
 ---
 
@@ -424,7 +424,7 @@ Content-Type: application/json
 }
 ```
 
-→ Schema: [`CreateOpportunityPublicDto`](openapi.json#/components/schemas/CreateOpportunityPublicDto)
+→ Schema: [`CreateOpportunityPublicDto`](../docs/api/openapi.json#/components/schemas/CreateOpportunityPublicDto)
 
 ---
 
@@ -446,7 +446,7 @@ Content-Type: application/json
 }
 ```
 
-→ Schema: [`UpsertProductDto`](openapi.json#/components/schemas/UpsertProductDto)
+→ Schema: [`UpsertProductDto`](../docs/api/openapi.json#/components/schemas/UpsertProductDto)
 
 ---
 
@@ -469,7 +469,7 @@ Content-Type: application/json
 }
 ```
 
-→ Schema: [`CreateQuoteDto`](openapi.json#/components/schemas/CreateQuoteDto)
+→ Schema: [`CreateQuoteDto`](../docs/api/openapi.json#/components/schemas/CreateQuoteDto)
 
 ---
 
@@ -488,7 +488,7 @@ Content-Type: application/json
 }
 ```
 
-→ Schema: [`SyncStateDto`](openapi.json#/components/schemas/SyncStateDto)
+→ Schema: [`SyncStateDto`](../docs/api/openapi.json#/components/schemas/SyncStateDto)
 
 ---
 
@@ -764,7 +764,7 @@ PUT /public-api/opportunity/ext/{externalIdentifier}
 GET /public-api/opportunity?filters=statusId:closed&size={n}&from={offset}
 ```
 
-Paginated via `size`/`from`. The `filters` parameter is **equality-only** (`field:value`, multiple values OR'd with `|`) — there are **no comparison/range operators**, so the close-date delta cannot be filtered server-side. The delta is therefore applied **client-side** on `closedAt > SinceDate` (not `updatedAt`, which moves on any edit); opportunities without a `closedAt` are skipped. Flows 2 (Items), 3 (Quotations) and 4 (PDF) each call this independently, with their own delta and their own watermark node — `Flow2`, `Flow3`, `Flow4` respectively — in the shared `configs/LastSyncDates.xml` state file (alongside Flow 1's `Flow1` node; see `Get-/Set-SyncWatermark` in `Sync-Forecasts.ps1`). An optional `<OverrideDays>N</OverrideDays>` element in `configs/config.xml` (`Get-SyncOverrideDays`) is a test override that makes all four flows sync from N days ago at local midnight for that run; ignored when empty/missing/non-numeric.
+Paginated via `size`/`from`. The `filters` parameter is **equality-only** (`field:value`, multiple values OR'd with `|`) — there are **no comparison/range operators**, so the close-date delta cannot be filtered server-side. The delta is therefore applied **client-side** on `closedAt > SinceDate` (not `updatedAt`, which moves on any edit); opportunities without a `closedAt` are skipped. Flows 2 (Items), 3 (Quotations) and 4 (PDF) each call this independently, with their own delta and their own watermark node — `Flow2`, `Flow3`, `Flow4` respectively — in the shared `configs/last-sync-dates.xml` state file (alongside Flow 1's `Flow1` node; see `Get-/Set-SyncWatermark` in `Sync-Forecasts.ps1`). An optional `<OverrideDays>N</OverrideDays>` element in `configs/config.xml` (`Get-SyncOverrideDays`) is a test override that makes all four flows sync from N days ago at local midnight for that run; ignored when empty/missing/non-numeric.
 
 ### Fetch the primary quote for a closed Opportunity
 
@@ -806,7 +806,7 @@ The **old "AFAS werksoort" product custom-field branch is removed entirely.** A 
 Reading the `internalProductId` (`Get-SalesbuildrProductInternalId`):
 
 - The inline quote-line `product` reference (`IdentifiedEntityResponseDto`: `id, name, externalIdentifier, labels, customFields`) does **not** carry `internalProductId` — it simply isn't one of that DTO's fields, unlike the werksoort custom field before it.
-- The helper therefore **always** fetches the full product via `GET /public-api/product/{id}` (`Get-SalesbuildrProductById`, returns a [`ProductResponseDto`](openapi.json#/components/schemas/ProductResponseDto)) — cached per product id in `$Global:SbProductCache` so multiple lines referencing the same product cost only one extra API call.
+- The helper therefore **always** fetches the full product via `GET /public-api/product/{id}` (`Get-SalesbuildrProductById`, returns a [`ProductResponseDto`](../docs/api/openapi.json#/components/schemas/ProductResponseDto)) — cached per product id in `$Global:SbProductCache` so multiple lines referencing the same product cost only one extra API call.
 - Returns the trimmed `internalProductId` string, or `$null` if there is no linked product or the field is empty.
 
 **Diensten existence check** (Flow 3, Stap 3b): for each unique non-blank Diensten `internalProductId`, the script checks AFAS the same way as for articles — a per-code filtered `Salesbuildr_Artikelen.itemCode` lookup (`Get-AfasArtikelByItemCode`) — result stored in `$DienstenExists`. Diensten codes are **never** added to `$FailedItemCodes` and **never created** via `FbItemArticle` (that connector only creates articles, and only Flow 2 ever calls it).
@@ -824,7 +824,7 @@ Article lines are unaffected by any of this — they stay `VaIt = "2"` with `UnI
 
 When a missing article is created in AFAS (Flow 2 — Items), its **artikelgroep** (`FbItemArticle.Grp`) is required and is resolved in a **two-hop main-category lookup**: the line's leaf `category.id` is walked up to its main (root) category, and that main-category id is then looked up in the repo file `configs/mapping-artikelgroepen.xml`.
 
-**Hop 1 — leaf category → main category.** At the **start of the run**, `Get-SalesbuildrCategoryParentMap` fetches all categories via `GET /public-api/category` (flat list, [`CategoryResponseDto[]`](openapi.json#/components/schemas/CategoryResponseDto)) and builds an in-memory map `category.id -> parentCategoryId` (empty `parentCategoryId` = root). For each quote line, `Get-SalesbuildrMainCategoryId -CategoryId -ParentMap` walks the line's `category.id` (`QuoteItemResponseDto.category.id`) up this parent chain to the topmost/root category id (cycle-protected; returns `$null` if the category id is unknown to the map).
+**Hop 1 — leaf category → main category.** At the **start of the run**, `Get-SalesbuildrCategoryParentMap` fetches all categories via `GET /public-api/category` (flat list, [`CategoryResponseDto[]`](../docs/api/openapi.json#/components/schemas/CategoryResponseDto)) and builds an in-memory map `category.id -> parentCategoryId` (empty `parentCategoryId` = root). For each quote line, `Get-SalesbuildrMainCategoryId -CategoryId -ParentMap` walks the line's `category.id` (`QuoteItemResponseDto.category.id`) up this parent chain to the topmost/root category id (cycle-protected; returns `$null` if the category id is unknown to the map).
 
 **Hop 2 — main category → `Grp`.** The resulting main-category id is looked up in `configs/mapping-artikelgroepen.xml`:
 
@@ -890,4 +890,4 @@ Flow 4 only requests the PDF for **Won** opportunities — same primary-quote/`s
 
 - [Salesbuildr Help Center — Public API](https://help.salesbuildr.com/articles/3446453-public-api)
 - [Full API Reference (Redocly)](https://portal.salesbuildr.com/public-api#/)
-- [OpenAPI Spec](openapi.json) — authoritative source for all request/response schemas
+- [OpenAPI Spec](../docs/api/openapi.json) — authoritative source for all request/response schemas

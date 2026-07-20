@@ -2,5 +2,9 @@
 ignore/
 logs/
 
+# Plaintext credentials & runtime state (never commit — use config.example.xml as template)
+configs/config.xml
+configs/last-sync-dates.xml
+
 # OS cruft
 .DS_Store

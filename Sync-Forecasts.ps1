@@ -210,7 +210,7 @@ function ConvertFrom-ForecastExternalId {
 
 function Get-SyncWatermark {
     # Leest één sync-watermerk uit het gezamenlijke state-bestand
-    # (configs\LastSyncDates.xml). Ontbrekend bestand/knoop -> $DefaultDate
+    # (configs\last-sync-dates.xml). Ontbrekend bestand/knoop -> $DefaultDate
     # (2026-01-01), zodat een eerste run vanaf die datum ophaalt (niet vanaf de
     # Unix-epoch). Naam is de flow-sleutel, bv. 'Flow1' / 'Flow2'.
     param(
@@ -264,14 +264,14 @@ function Set-SyncWatermark {
 #region ── AFAS ──────────────────────────────────────────────────────────────
 
 function Connect-Afas {
-    # Mode 'TEST' gebruikt de AFAS test-omgeving (resttest.afas.online),
-    # anders de productie-omgeving (rest.afas.online).
+    # Mode '2' gebruikt de AFAS test-omgeving (resttest.afas.online);
+    # mode '1' (of iets anders) de productie/LIVE-omgeving (rest.afas.online).
     param(
         [string]$Omgeving,
         [string]$ApiToken,
-        [string]$Mode = 'PROD'
+        [string]$Mode = '1'
     )
-    $subdomain          = if ($Mode -eq 'TEST') { 'resttest' } else { 'rest' }
+    $subdomain          = if ($Mode -eq '2') { 'resttest' } else { 'rest' }
     $Global:AfasRestUrl = "https://$($Omgeving).$subdomain.afas.online/profitrestservices"
     $encoded            = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes($ApiToken))
     $Global:AfasHeaders = @{ Authorization = "AfasToken $encoded" }
@@ -1133,7 +1133,7 @@ try {
     # State: alle vier flow-watermerken staan als aparte knopen in één bestand.
     #   Flow1 = Forecasts, Flow2 = Items, Flow3 = Quotations, Flow4 = PDF/dossieritems.
     # Zie Get-/Set-SyncWatermark.
-    $SyncStateFile = "$PSScriptRoot\configs\LastSyncDates.xml"
+    $SyncStateFile = "$PSScriptRoot\configs\last-sync-dates.xml"
 
     $LastForecastSync   = Get-SyncWatermark -Path $SyncStateFile -Name 'Flow1'
     $LastItemsSync      = Get-SyncWatermark -Path $SyncStateFile -Name 'Flow2'
@@ -1142,7 +1142,7 @@ try {
 
     # Test-override: <OverrideDays>N</OverrideDays> in config.xml laat alle flows
     # syncen vanaf N dagen geleden (middernacht lokale tijd). De Flow-watermerken in
-    # LastSyncDates.xml worden aan het eind van de run gewoon bijgewerkt; de override
+    # last-sync-dates.xml worden aan het eind van de run gewoon bijgewerkt; de override
     # staat los in config.xml en blijft elke run actief tot hij daar wordt geleegd.
     $OverrideDays = Get-SyncOverrideDays -Value $config.OverrideDays
     if ($null -ne $OverrideDays) {
@@ -1155,12 +1155,18 @@ try {
     }
 
     # Credentials, omgeving en MODE komen plaintext uit config.xml.
-    # afas.token is het <token>…</token> XML; Connect-Afas base64-encodeert
-    # die zelf. MODE=TEST schakelt naar resttest.afas.online.
+    # MODE: '1' = LIVE/productie (rest.afas.online, token_live),
+    #       '2' = TEST (resttest.afas.online, token_test).
+    # afas.token_live / afas.token_test zijn elk het <token>…</token> XML;
+    # Connect-Afas base64-encodeert het gekozen token zelf.
     # SelectSingleNode + InnerText: werkt zowel met CDATA als met ge-escapete tekst.
     $Mode              = $config.mode
     $AfasOmgeving      = $config.afas.omgeving
-    $AfasApiToken      = $config.SelectSingleNode('afas/token').InnerText
+    $LiveTokenNode     = $config.SelectSingleNode('afas/token_live')
+    $TestTokenNode     = $config.SelectSingleNode('afas/token_test')
+    $AfasTokenLive     = if ($LiveTokenNode) { $LiveTokenNode.InnerText } else { '' }
+    $AfasTokenTest     = if ($TestTokenNode) { $TestTokenNode.InnerText } else { '' }
+    $AfasApiToken      = if ($Mode -eq '2') { $AfasTokenTest } else { $AfasTokenLive }
     $SalesbuildrApiKey = $config.salesbuildr.apikey
     $SalesbuildrUrl    = $config.salesbuildr.url
 
@@ -1187,8 +1193,9 @@ try {
     $Flow3Enabled = ConvertTo-ConfigBool -Value $config.flows.flow3 -Default $true
     $Flow4Enabled = ConvertTo-ConfigBool -Value $config.flows.flow4 -Default $true
 
+    $ActiveTokenKey = if ($Mode -eq '2') { 'afas.token_test' } else { 'afas.token_live' }
     foreach ($entry in @{ 'afas.omgeving'      = $AfasOmgeving
-                          'afas.token'         = $AfasApiToken
+                          $ActiveTokenKey      = $AfasApiToken
                           'salesbuildr.apikey' = $SalesbuildrApiKey
                           'salesbuildr.url'    = $SalesbuildrUrl }.GetEnumerator()) {
         if ([string]::IsNullOrWhiteSpace($entry.Value)) {
@@ -1205,7 +1212,7 @@ try {
     # stoppen de run. Beide worden gecontroleerd zodat je in één run beide fouten ziet.
     $CredentialsOk = $true
     if (-not (Test-AfasConnection)) {
-        Write-Log WARNING "AFAS-token ongeldig (HTTP 401) — controleer afas/token in config.xml; sync afgebroken"
+        Write-Log WARNING "AFAS-token ongeldig (HTTP 401) — controleer $ActiveTokenKey in config.xml; sync afgebroken"
         $CredentialsOk = $false
     }
     if (-not (Test-SalesbuildrConnection)) {
@@ -1296,7 +1303,7 @@ try {
             $CompanyExtId = "afas-Organisatie-$($Forecast.organisatie)"
 
             # Organisatie (nog) niet gesynchroniseerd naar SalesBuildr -> loggen en overslaan.
-            # TODO: deze waarschuwingen ook opnemen in de notificatie-email (zie docs/TODO.md).
+            # TODO: deze waarschuwingen ook opnemen in de notificatie-email (zie .claude/TODO.md).
             $Company = Get-SalesbuildrCompanyByExtId -ExternalId $CompanyExtId
             if ($null -eq $Company) {
                 Write-Log WARNING "[Flow 1] Organisatie $($Forecast.organisatie) niet gevonden in SalesBuildr ($CompanyExtId) — Forecast '$($Forecast.forecastOmschrijving)' overgeslagen"

@@ -40,5 +40,5 @@ losse `TODO`-opmerkingen die verspreid in de code stonden (zie *Herkomst* per it
 
 - [ ] `KnQuotation.Upri` gebruikt de ruwe eenheidsprijs (`price`) zónder regelkorting,
   terwijl `CmForecast.OrAF` de korting wél toepast — bekende inconsistentie, wacht op
-  bevestiging, nog niet in code opgelost. — *herkomst: `docs/api/AFAS_API_Guide.md`,
-  `docs/api/Salesbuildr_API_Guide.md`*
+  bevestiging, nog niet in code opgelost. — *herkomst: `.claude/AFAS_API_Guide.md`,
+  `.claude/Salesbuildr_API_Guide.md`*

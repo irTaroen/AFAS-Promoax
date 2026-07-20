@@ -1,6 +1,6 @@
 # Sync-Forecasts — Execution Flow
 
-Four independent flows, each with its own config toggle (`<flows><flowN>`) and watermark node (`FlowN` in `configs/LastSyncDates.xml`), run in sequence within one script invocation:
+Four independent flows, each with its own config toggle (`<flows><flowN>`) and watermark node (`FlowN` in `configs/last-sync-dates.xml`), run in sequence within one script invocation:
 
 - **Flow 1** — AFAS Forecasts → Salesbuildr Opportunities
 - **Flow 2 (Items)** — won closed Opportunities → create missing AFAS articles (`FbItemArticle`)
@@ -14,7 +14,7 @@ Flows 2, 3 and 4 each independently fetch their own batch of closed Opportunitie
 - Clear error state (`$Error.Clear()`) and enter the top-level `try` (:1023-1024).
 - Ensure `configs/` dir exists — creates it if missing (:1027-1029).
 - Load config from `configs/config.xml` into `$config` (:1031).
-- Read all **four** watermarks from the single state file `configs/LastSyncDates.xml` (:1038-1041):
+- Read all **four** watermarks from the single state file `configs/last-sync-dates.xml` (:1038-1041):
   - `Flow1` node → `$LastForecastSync`
   - `Flow2` node → `$LastItemsSync`
   - `Flow3` node → `$LastQuotationsSync`
