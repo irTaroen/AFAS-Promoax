@@ -356,6 +356,30 @@ function Get-AfasArtikelByItemCode {
     return $null
 }
 
+function Get-AfasInkooprelatie {
+    # Herleidt een SalesBuildr-leverancier (supplier.externalIdentifier) naar de AFAS
+    # inkooprelatie, via de Salesbuildr_DebiteurenCrediteuren GetConnector, server-side
+    # gefilterd op Nummer (operatortypes=1 = gelijk aan). De SB-vendor-externalId komt
+    # overeen met AFAS 'Nummer'; we geven de bijbehorende 'Inkooprelatie' terug (bijv.
+    # "50029"), of $null als er geen (matchende) rij is of de Inkooprelatie leeg is.
+    # Gebruikt in Flow 3 om per artikelregel het vrije veld U69BD7B0B... te vullen.
+    param(
+        [string]$Connector,
+        [string]$Nummer      # = SB supplier.externalIdentifier
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Nummer)) { return $null }
+
+    $url      = "$($Global:AfasRestUrl)/connectors/$($Connector)" +
+                "?filterfieldids=Nummer&filtervalues=$([uri]::EscapeDataString($Nummer))&operatortypes=1&skip=0&take=1"
+    $response = Invoke-RestMethod -Uri $url -Headers $Global:AfasHeaders -Method Get
+
+    if ($response.rows.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$response.rows[0].Inkooprelatie)) {
+        return [string]$response.rows[0].Inkooprelatie
+    }
+    return $null
+}
+
 function Get-AfasQuotationAttachment {
     # Controleert of er al een PDF-bijlage (dossieritem) bij een AFAS-quotation hangt,
     # via de Salesbuildr_Dossieritems GetConnector, server-side gefilterd op
@@ -582,37 +606,16 @@ function Close-AfasForecast {
     Invoke-AfasUpdateConnector -Connector $Connector -Body $body -Method 'Put'
 }
 
-function New-AfasQuotation {
-    # Maakt een AFAS-quotation (KnQuotation, de voorcalculatie) aan in AFAS,
-    # inclusief regels — te onderscheiden van de SB-quotation (de Salesbuildr quote).
-    # Meerdere regels gaan als één payload mee: KnQuotationLine.Element is een
-    # ARRAY van { Fields = ... }-objecten binnen één Objects-entry.
-    # Kop (KnQuotation.Element):
-    #   @QuId = uniek AFAS forecast-id (Element-attribuut), tevens idempotentiesleutel
-    #           (offerte in Salesbuildr_Voorcalculatie).
-    #   QuDa  = offertedatum (voorlopig huidige datum).
-    #   DbId  = verkooprelatie / debtor code (= AFAS PrId), uit de opp-externalId.
-    #   FcNo  = forecast volgnummer (= CmForecast.SqNo), uit de opp-externalId.
-    # Regel (KnQuotationLine.Element[].Fields) — drie regeltypes via VaIt:
-    #   VaIt="2" ARTIKEL   : ItCd = mpn, UnId = "St", QuUn/Qu/QuSa = aantal,
-    #                        Upri = verkoopprijs p/st, AmCo = kostprijs p/st.
-    #   VaIt="1" WERKSOORT : ItCd = werksoort-code (Diensten-internalProductId dat in AFAS
-    #                        bestaat), UnId = "" (geen eenheid), QuUn/Qu/QuSa = aantal,
-    #                        Upri = verkoopprijs, AmCo = "0" (werksoorten hebben ALTIJD kostprijs 0).
-    #   VaIt="3" TXT       : Diensten-item dat NIET in AFAS bestaat -> tekstregel. ItCd = "SBO"
-    #                        (vaste AFAS text-item-code voor Salesbuildr-tekstregels), Ds = SB-info
-    #                        (omschrijving + aantal + prijs + kostprijs, max 255 tekens), en
-    #                        UnId/QuUn/Qu/QuSa/Upri/AmCo alle leeg — een tekstregel voert geen
-    #                        aantallen of bedragen.
-    # Het regeltype komt per regel uit Regel.Kind ('txt') of Regel.Soort ("1"/"2", val terug op "2").
-    # Bedragen als string met punt-decimaal (invariant).
+function ConvertTo-AfasQuotationBody {
+    # Bouwt de KnQuotation-payload (kop + regels) — losgetrokken van New-AfasQuotation
+    # zodat zowel de echte write als een dry-run (ON HOLD) exact dezelfde payload kunnen
+    # tonen. Zie New-AfasQuotation voor de veld-/regeluitleg.
     param(
-        [string]$Connector,
-        [string]$QuId,        # AFAS forecast-id, bijv. "11310"
-        [string]$DbId,        # verkooprelatie / debtor code (= AFAS PrId)
-        [int]$FcNo,           # forecast volgnummer (CmForecast.SqNo)
-        [string]$Ds,          # omschrijving (= SB-quote title), afgekapt op 100 tekens
-        [array]$Regels        # array van hashtables: ItemCode, Aantal, Prijs, Kostprijs, [Soort] of { Kind='txt', Tekst, Aantal, Prijs, Kostprijs }
+        [string]$QuId,
+        [string]$DbId,
+        [int]$FcNo,
+        [string]$Ds,
+        [array]$Regels
     )
 
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
@@ -660,11 +663,21 @@ function New-AfasQuotation {
             }
             # Werksoort-regel (VaIt=1) draagt een extra veld StId = "N".
             if ($isWerksoort) { $fields.StId = "N" }
+            # Artikelregel (VaIt=2) draagt twee vrije velden:
+            #   UC61B5DF54390117579CF9AA289E985F0 = altijd true (ja)
+            #   U69BD7B0B402F2007FEC9E485BB4B59C9 = AFAS-inkooprelatie van de leverancier;
+            #     alleen meesturen als die herleid kon worden (anders veld weglaten).
+            else {
+                $fields.UC61B5DF54390117579CF9AA289E985F0 = $true
+                if (-not [string]::IsNullOrWhiteSpace($_.Inkooprelatie)) {
+                    $fields.U69BD7B0B402F2007FEC9E485BB4B59C9 = $_.Inkooprelatie
+                }
+            }
             @{ Fields = $fields }
         }
     })
 
-    $body = @{
+    return @{
         KnQuotation = @{
             Element = @{
                 "@QuId" = $QuId
@@ -673,6 +686,8 @@ function New-AfasQuotation {
                     DbId = $DbId
                     FcNo = $FcNo
                     Ds   = $Ds
+                    # Vrij veld (KnQuotation-kop): vaste waarde "G".
+                    U1D8B1C0045A26507C9B67995789BFF16 = "G"
                 }
                 Objects = @(
                     @{
@@ -684,10 +699,44 @@ function New-AfasQuotation {
             }
         }
     }
+}
+
+function New-AfasQuotation {
+    # Maakt een AFAS-quotation (KnQuotation, de voorcalculatie) aan in AFAS,
+    # inclusief regels — te onderscheiden van de SB-quotation (de Salesbuildr quote).
+    # Meerdere regels gaan als één payload mee: KnQuotationLine.Element is een
+    # ARRAY van { Fields = ... }-objecten binnen één Objects-entry.
+    # Kop (KnQuotation.Element):
+    #   @QuId = uniek AFAS forecast-id (Element-attribuut), tevens idempotentiesleutel
+    #           (offerte in Salesbuildr_Voorcalculatie).
+    #   QuDa  = offertedatum (voorlopig huidige datum).
+    #   DbId  = verkooprelatie / debtor code (= AFAS PrId), uit de opp-externalId.
+    #   FcNo  = forecast volgnummer (= CmForecast.SqNo), uit de opp-externalId.
+    # Regel (KnQuotationLine.Element[].Fields) — drie regeltypes via VaIt:
+    #   VaIt="2" ARTIKEL   : ItCd = mpn, UnId = "St", QuUn/Qu/QuSa = aantal,
+    #                        Upri = verkoopprijs p/st, AmCo = kostprijs p/st.
+    #   VaIt="1" WERKSOORT : ItCd = werksoort-code (Diensten-internalProductId dat in AFAS
+    #                        bestaat), UnId = "" (geen eenheid), QuUn/Qu/QuSa = aantal,
+    #                        Upri = verkoopprijs, AmCo = "0" (werksoorten hebben ALTIJD kostprijs 0).
+    #   VaIt="3" TXT       : Diensten-item dat NIET in AFAS bestaat -> tekstregel. ItCd = "SBO"
+    #                        (vaste AFAS text-item-code voor Salesbuildr-tekstregels), Ds = SB-info
+    #                        (omschrijving + aantal + prijs + kostprijs, max 255 tekens), en
+    #                        UnId/QuUn/Qu/QuSa/Upri/AmCo alle leeg — een tekstregel voert geen
+    #                        aantallen of bedragen.
+    # Het regeltype komt per regel uit Regel.Kind ('txt') of Regel.Soort ("1"/"2", val terug op "2").
+    # Bedragen als string met punt-decimaal (invariant).
+    param(
+        [string]$Connector,
+        [string]$QuId,        # AFAS forecast-id, bijv. "11310"
+        [string]$DbId,        # verkooprelatie / debtor code (= AFAS PrId)
+        [int]$FcNo,           # forecast volgnummer (CmForecast.SqNo)
+        [string]$Ds,          # omschrijving (= SB-quote title), afgekapt op 100 tekens
+        [array]$Regels        # array van hashtables: ItemCode, Aantal, Prijs, Kostprijs, [Soort] of { Kind='txt', Tekst, Aantal, Prijs, Kostprijs }
+    )
+
+    $body = ConvertTo-AfasQuotationBody -QuId $QuId -DbId $DbId -FcNo $FcNo -Ds $Ds -Regels $Regels
 
     Write-Log INFO "AFAS-quotation aanmaken: $QuId (Forecast SqNo: $FcNo, $($Regels.Count) regel(s))"
-    # DEBUG: de volledige payload die naar AFAS gestuurd wordt (zelfde serialisatie als Invoke-AfasUpdateConnector, Depth 10).
-    Write-Log INFO "AFAS-quotation payload:`n$($body | ConvertTo-Json -Depth 10)"
     Invoke-AfasUpdateConnector -Connector $Connector -Body $body
 }
 
@@ -776,7 +825,13 @@ function Get-SalesbuildrClosedOpportunities {
     # client-side datumfilter. 'closedAt' is de sluitingsdatum (niet 'updatedAt',
     # dat bij élke wijziging verspringt); records zonder closedAt worden overgeslagen.
     # Paginering: bevestigd via OpenAPI — parameters zijn 'size' en 'from'.
-    param([datetime]$SinceDate)
+    #
+    # $CompanyIdFilter (optioneel, alleen gebruikt in TEST/mode 2): als gezet worden
+    # uitsluitend Opportunities van die klant (company.id — stabiel, i.t.t. de naam) verwerkt.
+    param(
+        [datetime]$SinceDate,
+        [string]$CompanyIdFilter
+    )
 
     $allResults = @()
     $size       = 100
@@ -792,7 +847,57 @@ function Get-SalesbuildrClosedOpportunities {
 
     # Client-side datumfilter op de sluitingsdatum 'closedAt' (OpportunityResponseDto).
     # Cast naar [datetime] zodat de vergelijking niet afhangt van het string-formaat.
-    return $allResults | Where-Object { $_.closedAt -and ([datetime]$_.closedAt) -gt $SinceDate }
+    $filtered = $allResults | Where-Object { $_.closedAt -and ([datetime]$_.closedAt) -gt $SinceDate }
+
+    # Test-klantfilter (mode 2): beperk tot één klant op company.id (stabiele sleutel).
+    if (-not [string]::IsNullOrWhiteSpace($CompanyIdFilter)) {
+        $filtered = $filtered | Where-Object { $_.company -and $_.company.id -eq $CompanyIdFilter }
+    }
+
+    return $filtered
+}
+
+function Get-SalesbuildrCompanyByName {
+    # Zoekt een Company in SalesBuildr op naam (vrije-tekst 'query'-parameter, net als
+    # Get-SalesbuildrContactByEmail). De search kan ook op andere velden matchen, dus
+    # filteren we client-side op een exacte (case-insensitieve) match van 'name'.
+    # Geeft de CompanyResponseDto terug (incl. id), of $null als er geen exacte match is.
+    # Alleen gebruikt om de test-klantnaam één keer naar zijn stabiele id te herleiden.
+    param([string]$Name)
+
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $null }
+
+    $encoded  = [uri]::EscapeDataString($Name)
+    $response = Invoke-SalesbuildrRequest `
+        -Uri "$($Global:SalesbuildrUri)/public-api/company?query=$encoded&size=100"
+
+    # De search-endpoint kan zowel een kale array als een {results:[]} object geven.
+    $companies = if ($response.results) { $response.results } else { $response }
+
+    return $companies | Where-Object { $_.name -and $_.name.ToLower() -eq $Name.ToLower() } |
+        Select-Object -First 1
+}
+
+function Get-SalesbuildrCompanyById {
+    # Haalt een Company op via zijn interne SB-id (GET /public-api/company/{id}) en
+    # geeft de CompanyResponseDto terug (incl. name, externalIdentifier), of $null bij 404.
+    # Gebruikt om (a) de test-klant-id naar een leesbare naam te herleiden en (b) de
+    # leverancier-company van een regel (product.vendor) naar zijn externalIdentifier
+    # (= AFAS Nummer). Resultaten worden gecachet omdat meerdere regels naar dezelfde
+    # leverancier kunnen verwijzen.
+    param([string]$Id)
+
+    if ([string]::IsNullOrWhiteSpace($Id)) { return $null }
+    if (-not $Global:SbCompanyCache) { $Global:SbCompanyCache = @{} }
+    if ($Global:SbCompanyCache.ContainsKey($Id)) { return $Global:SbCompanyCache[$Id] }
+
+    try {
+        $Company = Invoke-SalesbuildrRequest -Uri "$($Global:SalesbuildrUri)/public-api/company/$Id"
+    } catch {
+        if ($_.Exception.Response.StatusCode -eq 404) { $Company = $null } else { throw }
+    }
+    $Global:SbCompanyCache[$Id] = $Company
+    return $Company
 }
 
 function Get-SalesbuildrCompanyByExtId {
@@ -1054,6 +1159,27 @@ function Get-SalesbuildrProductInternalId {
     return $null
 }
 
+function Get-SalesbuildrLineVendorExternalId {
+    # Herleidt de leverancier-externalId van een quote-regel via het PRODUCT:
+    #   regel.product.id -> Get-SalesbuildrProductById -> product.vendor (SB company-id
+    #   van de leverancier) -> Get-SalesbuildrCompanyById -> company.externalIdentifier.
+    # Die externalIdentifier is het AFAS-'Nummer' waarmee Get-AfasInkooprelatie de
+    # inkooprelatie opzoekt (Flow 3). Zowel het product als de company worden gecachet.
+    # LET OP: de inline quote-regel draagt GEEN product.vendor, vandaar de product-fetch.
+    # $null als er geen product, geen vendor of geen externalIdentifier op de vendor is.
+    param($Line)
+
+    if ($null -eq $Line.product -or [string]::IsNullOrWhiteSpace($Line.product.id)) { return $null }
+
+    $Product = Get-SalesbuildrProductById -ProductId $Line.product.id
+    if ($null -eq $Product -or [string]::IsNullOrWhiteSpace([string]$Product.vendor)) { return $null }
+
+    $Vendor = Get-SalesbuildrCompanyById -Id ([string]$Product.vendor)
+    if ($null -eq $Vendor -or [string]::IsNullOrWhiteSpace([string]$Vendor.externalIdentifier)) { return $null }
+
+    return ([string]$Vendor.externalIdentifier).Trim()
+}
+
 function Resolve-AfasLineItem {
     # Bepaalt per SB-quote-regel de AFAS-itemcode (ItCd) én het regeltype (VaIt):
     #   - mpn aanwezig                          -> ItCd = mpn, VaIt = "2" (artikel)
@@ -1186,6 +1312,17 @@ try {
     $KnSubjectStId = if ([string]::IsNullOrWhiteSpace($config.afas.kn_subject_stid)) { 46 } else { [int]$config.afas.kn_subject_stid }
     $KnSubjectUsId = if ([string]::IsNullOrWhiteSpace($config.afas.kn_subject_usid)) { '53307._sa_salesbldr' } else { $config.afas.kn_subject_usid }
 
+    # Test-klantfilter: in TEST (mode 2) verwerken Flow 2/3/4 uitsluitend gesloten
+    # Opportunities (en hun quotes) van deze SB-klant, zodat een testrun niet alle
+    # klanten aanraakt. Er wordt gefilterd op de STABIELE company.id (niet de naam):
+    #   - <salesbuildr><test_klant_id> gezet -> die id wordt direct gebruikt (geen lookup);
+    #   - anders wordt de naam uit <salesbuildr><test_klant> (default 'Big Pepper B.V.')
+    #     één keer via Get-SalesbuildrCompanyByName naar zijn id herleid en gelogd, zodat
+    #     je die id in config.xml kunt zetten en de gevoelige naam-match kunt laten vervallen.
+    # In LIVE (elke andere mode) blijft de filter $null -> alle klanten.
+    # LET OP: dit vereist een geldige SB-verbinding en gebeurt daarom pas ná Connect-Salesbuildr.
+    $TestCompanyIdFilter = $null
+
     # Flow-schakelaars uit config.xml (<flows><flow1>..<flow4>). Ontbrekend -> aan.
     #   flow1 = Forecasts -> Opportunities
     #   flow2 = Items       (gewonnen quotations -> ontbrekende artikelen in AFAS)
@@ -1224,6 +1361,26 @@ try {
     }
     if (-not $CredentialsOk) { return }
 
+    # Test-klant-id bepalen (mode 2): direct uit config, of één keer herleid uit de naam.
+    # Gebeurt hier — ná de credential-check — omdat de lookup een geldige SB-verbinding nodig heeft.
+    if ($Mode -eq '2') {
+        if (-not [string]::IsNullOrWhiteSpace($config.salesbuildr.test_klant_id)) {
+            $TestCompanyIdFilter = $config.salesbuildr.test_klant_id.Trim()
+            $TestKlant           = Get-SalesbuildrCompanyById -Id $TestCompanyIdFilter
+            $TestKlantNaam       = if ($TestKlant) { $TestKlant.name } else { $TestCompanyIdFilter }
+            Write-Log WARNING "TEST-modus (mode 2): Flow 2/3/4 verwerken uitsluitend SB-klant '$TestKlantNaam'"
+        }
+        else {
+            $TestKlantNaam = if ([string]::IsNullOrWhiteSpace($config.salesbuildr.test_klant)) { 'Big Pepper B.V.' } else { $config.salesbuildr.test_klant }
+            $TestKlant     = Get-SalesbuildrCompanyByName -Name $TestKlantNaam
+            if ($null -eq $TestKlant) {
+                throw "TEST-modus (mode 2): SB-klant '$TestKlantNaam' niet gevonden — kan test-klantfilter niet bepalen. Zet <salesbuildr><test_klant_id> of corrigeer <test_klant> in config.xml."
+            }
+            $TestCompanyIdFilter = $TestKlant.id
+            Write-Log WARNING "TEST-modus (mode 2): Flow 2/3/4 verwerken uitsluitend SB-klant '$TestKlantNaam'"
+        }
+    }
+
     # AFAS connector namen uit config
     $ConnForecastGet    = $config.afas.connectors.forecasts_get        # Salesbuildr_Forecasts
     $ConnForecastUpdate = $config.afas.connectors.forecasts_update     # CmForecast
@@ -1234,6 +1391,8 @@ try {
     # Flow 4 — dossieritems; fallback op de bekende namen zodat oudere configs blijven werken.
     $ConnDossierGet     = if ([string]::IsNullOrWhiteSpace($config.afas.connectors.dossieritems_get)) { 'Salesbuildr_Dossieritems' } else { $config.afas.connectors.dossieritems_get }  # Salesbuildr_Dossieritems
     $ConnSubjectUpdate  = if ([string]::IsNullOrWhiteSpace($config.afas.connectors.subject_update)) { 'KnSubject' } else { $config.afas.connectors.subject_update }  # KnSubject
+    # Flow 3 — leverancier -> inkooprelatie; fallback op de bekende naam.
+    $ConnDebCredGet     = if ([string]::IsNullOrWhiteSpace($config.afas.connectors.debcred_get)) { 'Salesbuildr_DebiteurenCrediteuren' } else { $config.afas.connectors.debcred_get }  # Salesbuildr_DebiteurenCrediteuren
 
     # Mapping SalesBuildr HOOFDcategorie -> AFAS artikelgroep (Grp), uit
     # mapping-artikelgroepen.xml. Alleen hoofdcategorieën worden gemapt: een quote-regel
@@ -1389,7 +1548,7 @@ try {
         Write-Log INFO "=== Flow 2: Items — gewonnen SB-quotations → AFAS-artikelen ==="
         Write-Log INFO "Delta sinds: $LastItemsSync"
 
-        $ClosedOpportunities = Get-SalesbuildrClosedOpportunities -SinceDate $LastItemsSync
+        $ClosedOpportunities = Get-SalesbuildrClosedOpportunities -SinceDate $LastItemsSync -CompanyIdFilter $TestCompanyIdFilter
         Write-Log INFO "$($ClosedOpportunities.Count) gesloten Opportunities gevonden"
 
         # Batch-watermark voor Flow 2 (zie toelichting bij Flow 1).
@@ -1499,7 +1658,7 @@ try {
         Write-Log INFO "=== Flow 3: Quotations — gewonnen SB-quotations → AFAS-quotation ==="
         Write-Log INFO "Delta sinds: $LastQuotationsSync"
 
-        $ClosedOpportunities = Get-SalesbuildrClosedOpportunities -SinceDate $LastQuotationsSync
+        $ClosedOpportunities = Get-SalesbuildrClosedOpportunities -SinceDate $LastQuotationsSync -CompanyIdFilter $TestCompanyIdFilter
         Write-Log INFO "$($ClosedOpportunities.Count) gesloten Opportunities gevonden"
 
         # Batch-watermark voor Flow 3 (zie toelichting bij Flow 1).
@@ -1568,6 +1727,36 @@ try {
             if ($null -eq (Get-AfasArtikelByItemCode -Connector $ConnArtikelenGet -ItemCode $ItemCode)) {
                 Write-Log WARNING "[Flow 3] Artikel [$ItemCode] bestaat niet in AFAS (nog niet aangemaakt door Flow 2?) — opportunities met dit artikel worden overgeslagen"
                 $FailedItemCodes += $ItemCode
+            }
+        }
+
+        # Leverancier -> AFAS-inkooprelatie (voor het vrije veld U69BD7B0B... op artikelregels).
+        # Alleen artikelregels (VaIt=2) krijgen een leverancier. De leverancier-externalId
+        # wordt per regel herleid via het product (product.vendor = SB company-id ->
+        # company.externalIdentifier = AFAS 'Nummer'); zie Get-SalesbuildrLineVendorExternalId.
+        # We onthouden per regel de gevonden externalId ($LineVendorExtId) en herleiden per
+        # UNIEKE externalId de AFAS-inkooprelatie één keer (Salesbuildr_DebiteurenCrediteuren:
+        # Nummer -> Inkooprelatie) in $InkooprelatieMap. Geen product/vendor/externalId of geen
+        # AFAS-match -> $null; het vrije veld wordt dan simpelweg weggelaten (geen skip, geen
+        # watermerk-hold) — zie afspraak "vendor-veld weglaten".
+        $LineVendorExtId  = @{}   # regel.id -> leverancier-externalId (of $null)
+        foreach ($Line in $AllWonLines) {
+            $Res = $LineResolution[$Line.id]
+            if ($Res -and $Res.Kind -eq 'artikel') {
+                $LineVendorExtId[$Line.id] = Get-SalesbuildrLineVendorExternalId -Line $Line
+            }
+        }
+
+        $InkooprelatieMap = @{}
+        $VendorExtIds = @($LineVendorExtId.Values |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+        foreach ($VendorExtId in $VendorExtIds) {
+            $Inkooprelatie = Get-AfasInkooprelatie -Connector $ConnDebCredGet -Nummer $VendorExtId
+            $InkooprelatieMap[$VendorExtId] = $Inkooprelatie
+            if ($null -eq $Inkooprelatie) {
+                Write-Log WARNING "[Flow 3] Leverancier (Nummer $VendorExtId) niet gevonden in $ConnDebCredGet of zonder inkooprelatie — vrij veld inkooprelatie wordt weggelaten op regels met deze leverancier"
+            } else {
+                Write-Log INFO "[Flow 3] Leverancier (Nummer $VendorExtId) -> inkooprelatie $Inkooprelatie"
             }
         }
 
@@ -1658,12 +1847,17 @@ try {
                     }
                     else {
                         # Artikel (mpn, VaIt=2). ItemCode/Soort komen uit de resolutie.
+                        # Inkooprelatie (uit stap 3b, kan $null zijn -> veld wordt in
+                        # New-AfasQuotation weggelaten) hangt aan de leverancier van de regel,
+                        # herleid via het product (product.vendor -> company.externalIdentifier).
+                        $VendorExtId = $LineVendorExtId[$Line.id]
                         $Regels += @{
-                            ItemCode  = $Res.ItemCode
-                            Soort     = $Res.VaIt
-                            Aantal    = $Line.quantity
-                            Prijs     = $Line.price
-                            Kostprijs = $Line.cost
+                            ItemCode      = $Res.ItemCode
+                            Soort         = $Res.VaIt
+                            Aantal        = $Line.quantity
+                            Prijs         = $Line.price
+                            Kostprijs     = $Line.cost
+                            Inkooprelatie = if (-not [string]::IsNullOrWhiteSpace($VendorExtId)) { $InkooprelatieMap[$VendorExtId] } else { $null }
                         }
                     }
                 }
@@ -1762,7 +1956,7 @@ try {
         Write-Log INFO "=== Flow 4: SalesBuildr quote-PDF → AFAS dossieritem ==="
         Write-Log INFO "Delta sinds: $LastAttachmentSync"
 
-        $ClosedOpportunities = Get-SalesbuildrClosedOpportunities -SinceDate $LastAttachmentSync
+        $ClosedOpportunities = Get-SalesbuildrClosedOpportunities -SinceDate $LastAttachmentSync -CompanyIdFilter $TestCompanyIdFilter
         Write-Log INFO "$($ClosedOpportunities.Count) gesloten Opportunities gevonden"
 
         # Batch-watermark voor Flow 4 (zie toelichting bij Flow 1).

@@ -766,6 +766,25 @@ GET /public-api/opportunity?filters=statusId:closed&size={n}&from={offset}
 
 Paginated via `size`/`from`. The `filters` parameter is **equality-only** (`field:value`, multiple values OR'd with `|`) — there are **no comparison/range operators**, so the close-date delta cannot be filtered server-side. The delta is therefore applied **client-side** on `closedAt > SinceDate` (not `updatedAt`, which moves on any edit); opportunities without a `closedAt` are skipped. Flows 2 (Items), 3 (Quotations) and 4 (PDF) each call this independently, with their own delta and their own watermark node — `Flow2`, `Flow3`, `Flow4` respectively — in the shared `configs/last-sync-dates.xml` state file (alongside Flow 1's `Flow1` node; see `Get-/Set-SyncWatermark` in `Sync-Forecasts.ps1`). An optional `<OverrideDays>N</OverrideDays>` element in `configs/config.xml` (`Get-SyncOverrideDays`) is a test override that makes all four flows sync from N days ago at local midnight for that run; ignored when empty/missing/non-numeric.
 
+`Get-SalesbuildrClosedOpportunities` also accepts an optional `-CompanyIdFilter`; when set, the client-side filtering above adds `$_.company.id -eq $CompanyIdFilter`, restricting the batch to a single customer. See "Test-customer filter (mode 2 / TEST only)" below.
+
+### Test-customer filter (mode 2 / TEST only)
+
+In TEST mode (`config.xml`'s `<mode>2</mode>`), Flows 2/3/4 restrict every closed-Opportunities fetch to a single Salesbuildr customer, so a test run never touches other customers' data. The filter is applied on the stable `company.id` (never the name) via `Get-SalesbuildrClosedOpportunities -CompanyIdFilter`. In LIVE (any other mode) the filter stays `$null` and all customers are processed.
+
+The id is determined once at startup, after `Connect-Salesbuildr` and the credential pre-check:
+
+- `configs/config.xml`'s `<salesbuildr><test_klant_id>` — if set, used directly (no lookup); `Get-SalesbuildrCompanyById` resolves it back to a name purely for logging.
+- otherwise `configs/config.xml`'s `<salesbuildr><test_klant>` (a name, default `Big Pepper B.V.`) is resolved to an id via the new helper `Get-SalesbuildrCompanyByName`:
+
+```http
+GET /public-api/company?query={name}&size=100
+```
+
+The search endpoint matches on more than just `name`, so `Get-SalesbuildrCompanyByName` filters the results **client-side** for an exact, case-insensitive `name` match and returns the first hit (or `$null`). If no exact match is found, the script `throw`s — a TEST run cannot silently fall back to processing all customers. `Get-SalesbuildrCompanyById` (`GET /public-api/company/{id}`) does the reverse lookup (id → name), returning `$null` on a `404`.
+
+Both helpers are used **only** for this test-customer resolution; a WARNING is logged once at startup naming the resolved customer.
+
 ### Fetch the primary quote for a closed Opportunity
 
 ```
@@ -788,6 +807,7 @@ Among the returned quotes, the one with `primary: true` is used — **no fallbac
 | `cost` | `AmCo` | Per-unit cost price on an artikel line. **Always `"0"`** on a werksoort line — Diensten lines never carry a real cost into AFAS. **Empty string** on a TXT line. |
 | — | `UnId` | Not derived from a Salesbuildr field. `"St"` (stuks/pieces) on artikel lines; **empty string `""`** on werksoort and TXT lines. |
 | `category` `{ id, name }` | `Grp` (article group) | See below — resolved via the line's **main category**, not the leaf `category.id` directly; set only when the article is **created** (`FbItemArticle`), not on the quote line; not applicable to werksoort/TXT lines. |
+| `supplier.externalIdentifier` | `KnQuotationLine` free field `U69BD7B0B402F2007FEC9E485BB4B59C9` | Artikel lines only. Resolved to the AFAS **Inkooprelatie** via `Get-AfasInkooprelatie` — see below. Omitted from the line entirely if it can't be resolved. |
 
 ⚠️ **Caveat:** `Upri` uses the raw per-unit `price` and does not apply the item `discount`, whereas `CmForecast.OrAF` (see below) *does* apply discount. Known inconsistency, pending confirmation — not yet fixed in code.
 
@@ -819,6 +839,10 @@ Reading the `internalProductId` (`Get-SalesbuildrProductInternalId`):
 Article lines are unaffected by any of this — they stay `VaIt = "2"` with `UnId = "St"` and `AmCo = cost`.
 
 **Whole-opportunity enforcement:** in Flow 3's Stap 3c, if any line of a Won opportunity is unmappable (case 3 above) or resolves to an **article** unavailable in AFAS (not yet created by Flow 2), the **entire opportunity** is skipped — the AFAS quotation (`KnQuotation`) is not created and the originating Forecast is not closed (stays open), with the watermark held for retry. **Diensten lines never trigger this skip** — regardless of whether their `internalProductId` exists in AFAS, they always resolve to a werksoort or TXT line. See [AFAS_API_Guide.md](AFAS_API_Guide.md#promax-implementation-notes-sync-forecastsps1) for the resulting `KnQuotationLine` payload shapes.
+
+### Supplier → AFAS Inkooprelatie (`U69BD7B0B402F2007FEC9E485BB4B59C9`)
+
+Each artikel line's `supplier` (`QuoteItemResponseDto.supplier`, an [`IdentifiedEntityResponseDto`](../docs/api/openapi.json#/components/schemas/IdentifiedEntityResponseDto)) carries an `externalIdentifier` that is expected to match an AFAS `Nummer` in the new `Salesbuildr_DebiteurenCrediteuren` GetConnector (see [AFAS_API_Guide.md](AFAS_API_Guide.md#salesbuildr_debiteurencrediteuren--getconnector-read-debtorcreditor-relations)). Flow 3 (Stap 3b) collects every unique, non-blank `supplier.externalIdentifier` across the Won quote lines that resolved to `Kind = 'artikel'` (Diensten/werksoort/TXT lines have no supplier field on `KnQuotationLine`), and resolves each once via `Get-AfasInkooprelatie -Connector -Nummer`, caching the result (`Nummer -> Inkooprelatie`, possibly `$null`) in `$InkooprelatieMap`. In Stap 3c, each artikel line looks up its own `supplier.externalIdentifier` in that map and puts the result on the line; `New-AfasQuotation`/`ConvertTo-AfasQuotationBody` writes it to `KnQuotationLine`'s free field `U69BD7B0B402F2007FEC9E485BB4B59C9` **only** when non-blank — an unresolved supplier (no matching `Nummer`, or a matching row with an empty `Inkooprelatie`) simply omits the field from that line. This is **not** an error and does **not** hold the watermark — unlike the article-availability check, a missing Inkooprelatie only means one free field is left off, the line (and the whole opportunity) still goes through.
 
 ### Article group (`Grp`) via `configs/mapping-artikelgroepen.xml`
 

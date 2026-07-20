@@ -1330,6 +1330,57 @@ GET /connectors/Salesbuildr_Voorcalculatie?filterfieldids=gewijzigd&filtervalues
 
 ---
 
+## Salesbuildr_DebiteurenCrediteuren — GetConnector (Read Debtor/Creditor Relations)
+
+**Connector name:** `Salesbuildr_DebiteurenCrediteuren` (configurable via `configs/config.xml`'s `<afas><connectors><debcred_get>`, default `Salesbuildr_DebiteurenCrediteuren`)  
+Read-only connector returning debtor/creditor relation records. Used by Flow 3 (Quotations) to resolve a Salesbuildr quote line's `supplier.externalIdentifier` to the AFAS **Inkooprelatie** (purchase relation) of that supplier, via `Get-AfasInkooprelatie`.
+
+```http
+GET /connectors/Salesbuildr_DebiteurenCrediteuren?skip=0&take=100
+Authorization: AfasToken {base64_encoded_token}
+```
+
+### Response Schema
+
+```json
+{
+  "skip": 0,
+  "take": 100,
+  "rows": [
+    {
+      "Nummer": "70029",
+      "Soort": "Leverancier",
+      "Bedrijfsnaam": "Ingram Micro",
+      "Geblokkeerd": false,
+      "Verkooprelatie": "",
+      "Inkooprelatie": "50029"
+    }
+  ]
+}
+```
+
+### Field Reference
+
+| Field | Type | Description |
+|---|---|---|
+| `Nummer` | string | Relation number — matched against the SB quote line's `supplier.externalIdentifier` |
+| `Soort` | string | Relation kind |
+| `Bedrijfsnaam` | string | Company name |
+| `Geblokkeerd` | boolean | Whether the relation is blocked |
+| `Verkooprelatie` | string | AFAS sales relation code (debtor), when applicable |
+| `Inkooprelatie` | string | AFAS purchase relation code (creditor) — the value written to `KnQuotationLine`'s free field `U69BD7B0B402F2007FEC9E485BB4B59C9` on artikel lines |
+
+### Filtering
+
+```http
+# Look up a specific relation by number (operator 1 = equals)
+GET /connectors/Salesbuildr_DebiteurenCrediteuren?filterfieldids=Nummer&filtervalues=70029&operatortypes=1&skip=0&take=1
+```
+
+`Get-AfasInkooprelatie -Connector -Nummer` performs exactly this filtered lookup and returns the row's `Inkooprelatie` (or `$null` if there's no matching row, or the matching row's `Inkooprelatie` is blank). Flow 3 (Stap 3b) calls this once per unique, non-blank `supplier.externalIdentifier` across all Won quote lines, caching the result in `$InkooprelatieMap` — a miss is **not** an error, the free field is simply omitted on the affected artikel line(s) (see [KnQuotation](#knquotation--pre-calculation--quote-voorcalculatie) below).
+
+---
+
 ## KnQuotation — Pre-calculation / Quote (Voorcalculatie)
 
 **Connector name:** `KnQuotation`
@@ -1741,20 +1792,26 @@ Creates the **AFAS quotation** (`KnQuotation`, voorcalculatie — distinct from 
 ```json
 { "KnQuotation": { "Element": {
     "@QuId": "11310",
-    "Fields": { "QuDa": "2026-07-06", "DbId": "10654", "FcNo": 42, "Ds": "Moderne werkplek Noviflora (fase 1)" },
+    "Fields": {
+        "QuDa": "2026-07-06", "DbId": "10654", "FcNo": 42, "Ds": "Moderne werkplek Noviflora (fase 1)",
+        "U1D8B1C0045A26507C9B67995789BFF16": "G"
+    },
     "Objects": [ { "KnQuotationLine": { "Element": [
         {
           "Fields": {
             "VaIt": "2", "ItCd": "EP2-20095", "UnId": "St",
             "QuUn": "1", "Qu": "1", "QuSa": "1",
-            "Upri": "1749.03", "AmCo": "1381.73"
+            "Upri": "1749.03", "AmCo": "1381.73",
+            "UC61B5DF54390117579CF9AA289E985F0": true,
+            "U69BD7B0B402F2007FEC9E485BB4B59C9": "50029"
           }
         },
         {
           "Fields": {
-            "VaIt": "1", "ItCd": "101", "UnId": "St",
+            "VaIt": "1", "ItCd": "101", "UnId": "",
             "QuUn": "2", "Qu": "2", "QuSa": "2",
-            "Upri": "99.95", "AmCo": "60.00"
+            "Upri": "99.95", "AmCo": "0",
+            "StId": "N"
           }
         }
     ] } } ]
@@ -1767,6 +1824,7 @@ Creates the **AFAS quotation** (`KnQuotation`, voorcalculatie — distinct from 
 - `QuDa` is currently the current date (placeholder — revisit later for a real quote date).
 - `Objects` holds one `KnQuotationLine` with one `Element` array containing one entry per quote line (see example above — one article line, one werksoort line).
 - **Line fields (`ItCd`/`VaIt` resolved per line by `Resolve-AfasLineItem`):** `ItCd = mpn` with `VaIt = "2"` (artikel) when the quote line has an `mpn`; otherwise, when the line's main category is **"Diensten"** (`configs/config.xml`'s `<salesbuildr><diensten_maincategory_id>`, SB main-category id `UyOpp42UPGy3LKgSOQGX` by default), `ItCd` = the line's **`internalProductId`** (via `Get-SalesbuildrProductInternalId` — always a full `GET /public-api/product/{id}` fetch, the inline quote-line `product` reference never carries `internalProductId`) with `VaIt = "1"` (werksoort) if that code already exists in AFAS, or `VaIt = "3"` (tekstregel/TXT, `ItCd` forced to `"SBO"`) if it doesn't (or `internalProductId` is blank) — see the **three `KnQuotationLine` shapes** below and [Salesbuildr_API_Guide.md](Salesbuildr_API_Guide.md#promax-implementation-notes-sync-forecastsps1) for the full resolution logic. The **old "AFAS werksoort" product custom field is no longer read** — a werksoort must now sit under the Diensten main category. Diensten item codes are **referenced only**, same as before — never created via `FbItemArticle` (that connector creates articles, `VaTp`/`type=2`, only) — but a Diensten code missing from AFAS no longer makes the line unavailable; it becomes a TXT line instead (never a skip). A line with neither an `mpn` nor a Diensten main category is unmappable. `New-AfasQuotation` sets `VaIt` from each Regel's `Soort` field (falls back to `"2"` if absent). `UnId` = unit: `"St"` (stuks/pieces) on artikel lines, **empty string `""`** on werksoort and TXT lines. `QuUn`/`Qu`/`QuSa` are all set to the line `quantity` on artikel/werksoort lines, and to **empty strings** on a TXT line. `Upri` = per-unit sell price (`price`) on artikel/werksoort lines, empty string on TXT. `AmCo` = per-unit cost (`cost`) on an artikel line, **always `"0"`** on a werksoort line, empty string on TXT. All amounts are serialized as invariant-culture strings with a **dot** decimal separator (e.g. `"1749.03"`, never `"1749,03"`).
+- **Free fields:** the `KnQuotation` **header** always carries a constant free field `U1D8B1C0045A26507C9B67995789BFF16 = "G"`. A **werksoort** line (`VaIt="1"`) always carries `StId = "N"` on the line (unrelated to `KnSubject.StId`/dossieritemtype used by Flow 4 — same field name, different connector). An **artikel** line (`VaIt="2"`) always carries `UC61B5DF54390117579CF9AA289E985F0 = true` (boolean), plus `U69BD7B0B402F2007FEC9E485BB4B59C9` = the line's AFAS **Inkooprelatie**, resolved from the SB quote line's `supplier.externalIdentifier` via `Get-AfasInkooprelatie` against the [`Salesbuildr_DebiteurenCrediteuren`](#salesbuildr_debiteurencrediteuren--getconnector-read-debtorcreditor-relations) GetConnector — included **only** when it could be resolved; a miss (unknown `Nummer`, or a matching row with a blank `Inkooprelatie`) simply omits the field from that line (no skip, watermark still advances). TXT lines (`VaIt="3"`) carry none of these free fields.
 - ⚠️ **Whole-opportunity enforcement (Flow 3, Stap 3c):** if any line of a Won opportunity is unmappable (no `mpn` and not a Diensten line) or resolves to an **article** unavailable in AFAS (not yet created — that's Flow 2's job), the **entire opportunity** is skipped — the AFAS quotation is not created and the originating Forecast is **not** closed (stays open), with the watermark held for retry. This extends the earlier unmapped-artikelgroep skip (see `Grp` below, which happens in Flow 2 and surfaces here in Flow 3 as a missing article) to cover unmappable/unavailable article lines in general. **Diensten lines are exempt** — a Diensten line always resolves to a werksoort or TXT line (see below) and can never trigger this skip, even when its `internalProductId` doesn't exist in AFAS.
 
 #### The three `KnQuotationLine` shapes (`VaIt` values)
@@ -1782,21 +1840,24 @@ Creates the **AFAS quotation** (`KnQuotation`, voorcalculatie — distinct from 
 Exact field shapes:
 
 ```json
-// Artikel — VaIt "2"
+// Artikel — VaIt "2" (always carries both free fields below; the Inkooprelatie one is omitted if unresolved)
 { "Fields": {
     "VaIt": "2", "ItCd": "EP2-20095", "UnId": "St",
     "QuUn": "1", "Qu": "1", "QuSa": "1",
-    "Upri": "1749.03", "AmCo": "1381.73"
+    "Upri": "1749.03", "AmCo": "1381.73",
+    "UC61B5DF54390117579CF9AA289E985F0": true,
+    "U69BD7B0B402F2007FEC9E485BB4B59C9": "50029"
 }}
 
-// Werksoort — VaIt "1" (AmCo is always "0")
+// Werksoort — VaIt "1" (AmCo is always "0"; always carries StId = "N")
 { "Fields": {
     "VaIt": "1", "ItCd": "<internalProductId>", "UnId": "",
     "QuUn": "2", "Qu": "2", "QuSa": "2",
-    "Upri": "99.95", "AmCo": "0"
+    "Upri": "99.95", "AmCo": "0",
+    "StId": "N"
 }}
 
-// Tekstregel / TXT — VaIt "3" (ItCd fixed to "SBO"; no quantities or amounts)
+// Tekstregel / TXT — VaIt "3" (ItCd fixed to "SBO"; no quantities or amounts, no free fields)
 { "Fields": {
     "VaIt": "3", "ItCd": "SBO",
     "Ds": "Implementatie werkplek - aantal 2, prijs 99.95, kostprijs 60.00",
@@ -1809,7 +1870,7 @@ Exact field shapes:
 - A TXT line has no `UnId`, quantities, or amounts at all — all five are empty strings, not `"0"` or omitted.
 - ⚠️ **Known caveat:** `Upri` uses the raw per-unit `price` and does **not** apply the item `discount` — unlike `CmForecast.OrAF` (see above), which does apply discount. Pending confirmation; not yet fixed in code.
 - The OLD shape — `QuId`/`DbId`/`QuDa`/`Ds`/`CuId`/`FcNo` all inside `Fields`, with line fields `ItCd`/`Qu`/`UP` and no `UnId` — is obsolete.
-- Function names: `New-AfasQuotation` (was `New-AfasVoorcalculatie`) creates the quotation; `Get-AfasQuotation` (was `Get-AfasVoorcalculatie`) does the idempotency lookup.
+- Function names: `ConvertTo-AfasQuotationBody` builds the payload (header + lines) shown above; it's shared by `New-AfasQuotation` (the real `POST`) and Flow 3's `$AfasWritesOnHold3` dry-run branch, which now previews the **exact same payload** (via the same function) without writing. `New-AfasQuotation` (was `New-AfasVoorcalculatie`) creates the quotation; `Get-AfasQuotation` (was `Get-AfasVoorcalculatie`) does the idempotency lookup.
 
 ### Create a minimal Article (`FbItemArticle`, `POST`)
 
