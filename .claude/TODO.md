@@ -5,14 +5,11 @@ losse `TODO`-opmerkingen die verspreid in de code stonden (zie *Herkomst* per it
 
 ## Algemeen / later toevoegen
 
-- [ ] **Logging** verder uitbouwen
-- [ ] **Notificatie-email**
-  - [ ] Flow 1: "organisatie niet gevonden in SalesBuildr"-waarschuwingen opnemen in de notificatie-email
-  - [ ] Flow 2: de artikel-/categorie-waarschuwingen ook in de notificatie-email opnemen — *herkomst: `Sync-Forecasts.ps1:865`*
-- [ ] **Mapping artikelgroepen** afronden (hoofdcategorieën → AFAS `Grp`, zie `configs/mapping-artikelgroepen.xml`)
-- [ ] **Mapping werksoorten**
-- [ ] **Categorie "Diensten"**: voor items met **Diensten** als hoofdcategorie komt er later een volledig nieuwe categorie — mapping dan bijwerken (nu tijdelijk `AFAS-id="W"` → Werksoorten in `configs/mapping-artikelgroepen.xml`)
-- [ ] **Offerte als PDF** in het dossier van de klant plaatsen
+- [x] **Logging** verder uitbouwen
+- [x] **Mapping artikelgroepen** afronden (hoofdcategorieën → AFAS `Grp`, zie `configs/mapping-artikelgroepen.xml`)
+- [x] **Mapping werksoorten**
+- [x] **Categorie "Diensten"**: voor items met **Diensten** als hoofdcategorie komt er later een volledig nieuwe categorie — mapping dan bijwerken (nu tijdelijk `AFAS-id="W"` → Werksoorten in `configs/mapping-artikelgroepen.xml`)
+- [x] **Offerte als PDF** in het dossier van de klant plaatsen
 - [ ] **Status-combinaties** voor opportunities
 
 ## Forecasts (Flow 1)
@@ -27,7 +24,7 @@ losse `TODO`-opmerkingen die verspreid in de code stonden (zie *Herkomst* per it
 - [x] Cost center-id mappen aan cost center-naam en AFAS-artikelgroep
 - [ ] Uitbesteden aan ( VRIJ VELD)op de voorcalculatieregel. Dit is de inkooprelatie. Check SB api
 - [ ] Werkmaatschappy (VRIJ VELD) op de voorcalculatieregel vanuit de Forecast. Tabel heet Groeperingsoort
-- [ ] Adminsitratie vanuit voorcalc kopplen. Is dit mogelijk?
+- [x] Adminsitratie vanuit voorcalc kopplen. Dit is niet mogelijk
 - [x] Status offerte op voorcalc ook vullen
 ## AFAS
 
@@ -45,3 +42,7 @@ losse `TODO`-opmerkingen die verspreid in de code stonden (zie *Herkomst* per it
   terwijl `CmForecast.OrAF` de korting wél toepast — bekende inconsistentie, wacht op
   bevestiging, nog niet in code opgelost. — *herkomst: `.claude/AFAS_API_Guide.md`,
   `.claude/Salesbuildr_API_Guide.md`*
+- [ ] Flow 3 risico op dubbele voorcalculatieregels: de regel-insert (`@Action: insert`) is niet
+  idempotent. Slaagt `Update-AfasQuotation` maar faalt daarna het sluiten van de Forecast (`G`),
+  dan staat de Forecast nog niet op Gewonnen en voegt de volgende run de regels opnieuw toe.
+  Zo'n ERROR in het log handmatig nakijken.

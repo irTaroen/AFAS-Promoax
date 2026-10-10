@@ -4,7 +4,7 @@ Four independent flows, each with its own config toggle (`<flows><flowN>`) and w
 
 - **Flow 1** — AFAS Forecasts → Salesbuildr Opportunities
 - **Flow 2 (Items)** — won closed Opportunities → create missing AFAS articles (`FbItemArticle`)
-- **Flow 3 (Quotations)** — won closed Opportunities → create the AFAS quotation (`KnQuotation`, voorcalculatie) + close the Forecast; lost → close the Forecast only
+- **Flow 3 (Quotations)** — won closed Opportunities → update the existing AFAS quotation (`KnQuotation`, voorcalculatie, created by AFAS) with the voorcalculatieregels + close the Forecast; lost → close the Forecast only
 - **Flow 4 (PDF)** — won closed Opportunities → attach the SB quote PDF to the AFAS quotation as a dossieritem (`KnSubject`)
 
 Flows 2, 3 and 4 each independently fetch their own batch of closed Opportunities (own watermark) and categorize Won/Lost via the same shared helper (`Split-ClosedOpportunities`), so none of them block on another flow running in the *same* invocation — Flow 3 re-checks article availability itself (tolerating Flow 2 being off/behind/failed), and Flow 4 holds its watermark until the AFAS quotation exists (tolerating Flow 3 being off/behind/failed).
@@ -47,54 +47,57 @@ Flows 2, 3 and 4 each independently fetch their own batch of closed Opportunitie
   - Build the payload (:1224-1243): `name`, `companyExtId`, `probability` (= `scoringkans / 100` — AFAS `scoringkans` is 0–100, Salesbuildr `probability` expects a 0–1 fraction), `onetimeRevenue`, the **required** `ownerId` (= `verantwoordelijkeOwnerID`, a SB user id supplied by the GetConnector), plus `contactId` and, if present, `expectedCloseDate`.
   - Upsert via `PUT /public-api/opportunity/ext/{ExternalId}` (:1245-1251); on error, log ERROR and clear the flag.
 
-## Flow 2 — Items: create missing AFAS articles for won closed Opportunities (lines 1255–1356)
+## Flow 2 — Items: create missing AFAS articles for won closed Opportunities
 
-Preparatory step for Flow 3 — a `KnQuotation` line must not reference a non-existent article, so Flow 2 makes sure the articles exist before Flow 3 creates the quotation. Diensten (service) lines are **never** created here — those are resolved to a werksoort or TXT line entirely inside Flow 3.
+Preparatory step for Flow 3 — a `KnQuotationLine` must not reference a non-existent article, so Flow 2 makes sure the articles exist before Flow 3 inserts the quotation lines. Diensten (service) lines are **never** created here — those are resolved to a werksoort or TXT line entirely inside Flow 3.
 
-- If `$Flow2Enabled` is `$false` (:1265-1266), logs `"=== Flow 2 is uitgeschakeld in config.xml (flows/flow2) — overgeslagen ==="` and the whole flow body is skipped.
-- Fetch closed opportunities (:1272): `Get-SalesbuildrClosedOpportunities -SinceDate $LastItemsSync` pages through `statusId:closed` (size/from pagination), then client-side filters `closedAt > SinceDate` (not `updatedAt`, which moves on any edit; records without a `closedAt` are skipped) — the SB search API has equality filters only, no date range operators. Flow 2 fetches this **independently** of Flows 3/4 — its own call, its own watermark.
-- Set `$Flow2Complete = $true` (:1276).
-- An `$AfasWritesOnHold2` dev switch (:1279-1287, hardcoded `$false`) can pause all AFAS writes for this flow (fetch/categorize/log only) — used for inspection-only dry runs; flips `$Flow2Complete = $false` so the watermark doesn't advance.
-- **Categorize Won/Lost** (:1291-1293) via the shared `Split-ClosedOpportunities -LogPrefix "Flow 2"` helper (see below) — only Won opportunities carry lines that might need a new article; Lost is a no-op for Flow 2.
-- Flatten all Won quote lines and resolve each via `Resolve-AfasLineItem -CategoryParentMap $CategoryParentMap -DienstenMainCategoryId $DienstenMainCatId` (:1299-1304, see "Resolving a line item" below); collect unique item codes for lines with `Kind = 'artikel'` (i.e. an `mpn`) — Diensten codes are **never** included here (:1307-1310).
-- Per unique `mpn` (:1315-1350):
-  - Resolve the SB (sub)category → main category → AFAS artikelgroep via `Get-SalesbuildrMainCategoryId` / `Get-AfasArtikelgroep` (:1322-1325).
-  - A targeted per-item existence lookup via `Get-AfasArtikelByItemCode` (`Salesbuildr_Artikelen` filtered on `itemCode`) — no bulk catalog fetch (AFAS holds 30,000+ articles) (:1328). If it already exists, skip (INFO) and move to the next code.
-  - An unmapped category logs a WARNING and clears `$Flow2Complete` (:1337-1339) — but this does **not** skip a whole opportunity; Flow 2 has no opportunity-level concept, it simply fails to create this one article. The article then stays missing in AFAS, so Flow 3 will independently detect it via its own existence check and skip the opportunities that reference it.
-  - Otherwise create the article via `New-AfasArtikel` (`FbItemArticle`; `Ds` = quote item name capped at 100 chars, `Grp` = mapped group) (:1348-1352); on error, clear the flag.
+- If `$Flow2Enabled` is `$false`, logs `"=== Flow 2 is uitgeschakeld in config.xml (flows/flow2) — overgeslagen ==="` and the whole flow body is skipped.
+- Fetch closed opportunities: `Get-SalesbuildrClosedOpportunities -SinceDate $LastItemsSync` pages through `statusId:closed` (size/from pagination), then client-side filters `closedAt > SinceDate` (not `updatedAt`, which moves on any edit; records without a `closedAt` are skipped) — the SB search API has equality filters only, no date range operators. Flow 2 fetches this **independently** of Flows 3/4 — its own call, its own watermark.
+- Set `$Flow2Complete = $true`.
+- An `$AfasWritesOnHold2` dev switch (hardcoded `$false`) can pause all AFAS writes for this flow (fetch/categorize/log only) — used for inspection-only dry runs; flips `$Flow2Complete = $false` so the watermark doesn't advance.
+- **Categorize Won/Lost** via the shared `Split-ClosedOpportunities -LogPrefix "Flow 2"` helper (see below) — only Won opportunities carry lines that might need a new article; Lost is a no-op for Flow 2.
+- Flatten all Won quote lines and resolve each via `Resolve-AfasLineItem -CategoryParentMap $CategoryParentMap -DienstenMainCategoryId $DienstenMainCatId` (see "Resolving a line item" below); collect unique item codes for lines with `Kind = 'artikel'` (i.e. an `mpn`) — Diensten codes are **never** included here.
+- Per unique `mpn`:
+  - Resolve the SB (sub)category → main category → AFAS artikelgroep via `Get-SalesbuildrMainCategoryId` / `Get-AfasArtikelgroep` (the main-category id also keys the `Voorraad`/`Serienummer` flags).
+  - A targeted per-item existence lookup via `Get-AfasArtikelByItemCode` (`Salesbuildr_Artikelen` filtered on `itemCode`) — no bulk catalog fetch (AFAS holds 30,000+ articles). If it already exists, skip (INFO) and move to the next code.
+  - An unmapped category logs a WARNING and clears `$Flow2Complete` — but this does **not** skip a whole opportunity; Flow 2 has no opportunity-level concept, it simply fails to create this one article. The article then stays missing in AFAS, so Flow 3 will independently detect it via its own existence check and skip the opportunities that reference it.
+  - Otherwise create the article via `New-AfasArtikel` (`FbItemArticle`; `Ds` = quote item name capped at 100 chars, `Grp` = mapped group, `BiSt` = `Voorraad` and `AdSr` = `Serienummer` booleans from the same `mapping-artikelgroepen.xml` row via `$ArtikelVlaggenMap`, default `false`); on error, clear the flag.
 
-## Flow 3 — Quotations: create the AFAS quotation and close the Forecast (lines 1358–1614)
+## Flow 3 — Quotations: update the AFAS quotation with lines and close the Forecast
 
-- If `$Flow3Enabled` is `$false` (:1373-1374), logs `"=== Flow 3 is uitgeschakeld in config.xml (flows/flow3) — overgeslagen ==="` and the whole flow body is skipped.
-- Fetch closed opportunities (:1380) the same way as Flow 2, but **independently** — own call to `Get-SalesbuildrClosedOpportunities -SinceDate $LastQuotationsSync`, own watermark (`Flow3`).
-- Set `$Flow3Complete = $true` (:1384).
-- An `$AfasWritesOnHold3` dev switch (:1387-1394, hardcoded `$false`) can pause all AFAS writes for this flow the same way as Flow 2's.
+- If `$Flow3Enabled` is `$false`, logs `"=== Flow 3 is uitgeschakeld in config.xml (flows/flow3) — overgeslagen ==="` and the whole flow body is skipped.
+- Fetch closed opportunities the same way as Flow 2, but **independently** — own call to `Get-SalesbuildrClosedOpportunities -SinceDate $LastQuotationsSync`, own watermark (`Flow3`).
+- Set `$Flow3Complete = $true`.
+- An `$AfasWritesOnHold3` dev switch (hardcoded `$false`) can pause all AFAS writes for this flow the same way as Flow 2's.
 
-### Stap 3a — categorize Won/Lost (:1396-1404)
+### Stap 3a — categorize Won/Lost
 
 - `Split-ClosedOpportunities -LogPrefix "Flow 3"` (see below) returns `$Outcome.Won`/`.Lost`/`.Lines`/`.Titles`; `$Outcome.AllOk = $false` (a genuine quote-fetch failure) clears `$Flow3Complete`.
 
-### Stap 3b — resolve lines + determine AFAS availability (Won only) (:1406-1450)
+### Stap 3b — resolve lines + determine AFAS availability (Won only)
 
-- Flatten all Won quote lines and resolve each via `Resolve-AfasLineItem` (:1408-1420) — same helper Flow 2 uses, called again independently here on Flow 3's own fetched batch.
-- **Diensten existence check** (:1422-1435): for each unique non-blank Diensten `internalProductId`, `Get-AfasArtikelByItemCode` checks whether it exists in AFAS, stored in `$DienstenExists`. Diensten codes are **never** added to `$FailedItemCodes` and **never created** via `FbItemArticle` — not here, not in Flow 2.
-- **Article availability check** (:1437-1450): for each unique artikel `mpn`, `Get-AfasArtikelByItemCode` checks it **already exists** in AFAS — this is an availability check, not creation (creation is Flow 2's job). A missing `mpn` logs a WARNING and is added to `$FailedItemCodes`; this is how Flow 3 stays correct even when Flow 2 is disabled, failed, or hasn't run yet for a newly-mapped category.
+- Flatten all Won quote lines and resolve each via `Resolve-AfasLineItem` — same helper Flow 2 uses, called again independently here on Flow 3's own fetched batch.
+- **Diensten existence check**: for each unique non-blank Diensten `internalProductId`, `Get-AfasArtikelByItemCode` checks whether it exists in AFAS, stored in `$DienstenExists`. Diensten codes are **never** added to `$FailedItemCodes` and **never created** via `FbItemArticle` — not here, not in Flow 2.
+- **Article availability check**: for each unique artikel `mpn`, `Get-AfasArtikelByItemCode` checks it **already exists** in AFAS — this is an availability check, not creation (creation is Flow 2's job). A missing `mpn` logs a WARNING and is added to `$FailedItemCodes`; this is how Flow 3 stays correct even when Flow 2 is disabled, failed, or hasn't run yet for a newly-mapped category.
 
-### Stap 3c — create the AFAS quotation per Won opportunity (:1452-1585)
+### Stap 3c — update the AFAS quotation per Won opportunity
 
-- Parse the CmForecast key (`ForecastId`/`SqNo`/`PrId`) straight from the opportunity's `externalIdentifier` via `ConvertFrom-ForecastExternalId` (regex `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$`) — no re-fetch of the AFAS Forecast. An unexpected format → log ERROR, clear flag, skip (:1459-1464).
-- `$Lines = $WonQuoteLines[$OpportunityId]` is fetched **before** the idempotency check (:1466), since both the creation branch and the unmapped-line guard need it.
-- **Idempotency check** (:1473): `Get-AfasQuotation` filters `Salesbuildr_Voorcalculatie` on `offerte = {ForecastId}` (the bare AFAS forecast id, e.g. `11310` — no `SB-` prefix), stored as `$QuotationExists`.
-- **If `$QuotationExists`** (:1475-1477): only the **creation** is skipped (logged INFO) — execution still falls through to the Forecast-close step below. This is deliberate: a prior run may have created the `KnQuotation` but failed before closing the Forecast, and since the close is an idempotent `PUT` it's safe (and necessary) to retry it every run until it succeeds.
-- **Else — creation branch** (:1478-1567), only entered when the quotation does not yet exist:
-  - **Whole-opportunity skip** (:1488-1502): if any Won line is unmappable (no `mpn` and not Diensten) or is an artikel whose `mpn` is in `$FailedItemCodes`, skip the entire opportunity (WARNING, flag cleared) — a voorcalc line must not reference a non-existent or unresolved item. Diensten lines **never** trigger this — they always resolve to a werksoort or TXT line (see below).
-  - Build the `Regels` array (:1504-1547) — a Diensten line becomes a werksoort line (`Soort='1'`) if `$DienstenExists[$Res.ItemCode]` is true, else a TXT line (`Kind='txt'`); an artikel line keeps `ItemCode`/`Soort` from the resolution. Each carries `Aantal`/`Prijs`/`Kostprijs` from the quote line's `quantity`/`price`/`cost`.
-  - Create the `KnQuotation` via `New-AfasQuotation` (:1554-1565): `@QuId` = ForecastId, `DbId` = PrId, `FcNo` = SqNo, `Ds` = `$WonQuoteTitles[$OpportunityId]` (the SB quote's `title`, capped at 100 chars inside the function), `Regels` as the line array; on error, clear flag and `continue` (skips the close below for this opportunity).
-- **Closing the Won Forecast** (:1569-1584) — `Close-AfasForecast -ViOp "G" -OrAF (Get-SalesbuildrQuoteTotal -Items $Lines)` — runs **unconditionally** after the branch above, for both the just-created and the pre-existing-quotation case. Wrapped in its own `try`/`catch`: on error, logs ERROR, clears the flag, and `continue`s to the next opportunity.
+The main voorcalculatie (`KnQuotation`) is created by AFAS itself; Flow 3 only **updates** it and **inserts** the voorcalculatieregels in one `PUT KnQuotation` transaction.
 
-### Stap 3d — close Lost forecasts (:1587-1613)
+- Parse the CmForecast key (`ForecastId`/`SqNo`/`PrId`) straight from the opportunity's `externalIdentifier` via `ConvertFrom-ForecastExternalId` (regex `^afas-Forecast-(?<fc>\d+)-(?<sqno>\d+)-(?<pr>.+)$`). An unexpected format → log ERROR, clear flag, skip.
+- `$Lines = $WonQuoteLines[$OpportunityId]` is fetched first, since the unmapped-line guard and the payload build both need it.
+- **Fetch the AFAS Forecast**: `Get-AfasForecast` queries the `Salesbuildr_Forecasts` GetConnector filtered `forecast = {ForecastId}` (operatortypes=1). Not found → WARNING, clear flag, skip (watermark held).
+- **Idempotency check**: the Forecast's `statusCode` (`Get-AfasForecastStatusCode`, trimmed + upper-cased): `G` (gesloten en gescoord) or `N` (gesloten, niet gescoord) → already closed, INFO and the opportunity is skipped entirely (no voorcalc lines, no close, not a watermark hold); `O` (open) → continue; any other or empty value → WARNING, skip, watermark held (never guess, to avoid duplicate lines). This is **not** a skip that holds the watermark. (The exact `status` values are not yet confirmed against live data.)
+- **Precondition**: the main voorcalc must already exist — `Get-AfasQuotation` filters `Salesbuildr_Voorcalculatie` on `offerte = {ForecastId}` (the bare AFAS forecast id, e.g. `11310`). Missing → WARNING, clear flag, skip (Forecast stays open, watermark held).
+- **Whole-opportunity skip**: if any Won line is unmappable (no `mpn` and not Diensten) or is an artikel whose `mpn` is in `$FailedItemCodes`, skip the entire opportunity (WARNING, flag cleared) — a voorcalc line must not reference a non-existent or unresolved item. Diensten lines **never** trigger this — they always resolve to a werksoort or TXT line (see below).
+- Build the `Regels` array — a Diensten line becomes a werksoort line (`Soort='1'`) if `$DienstenExists[$Res.ItemCode]` is true, else a TXT line (`Kind='txt'`); an artikel line keeps `ItemCode`/`Soort` from the resolution. Each carries `Aantal`/`Prijs`/`Kostprijs` from the quote line's `quantity`/`price`/`cost`. The payload comes from `ConvertTo-AfasQuotationBody` (no `-DbId`/`-FcNo` params anymore); the `$AfasWritesOnHold3` dry-run logs this same JSON in its WARNING instead of writing.
+- Send via `Update-AfasQuotation` (`PUT KnQuotation`): header `@QuId` = ForecastId (Element attribute) + Fields `"@Action": "update"`, `Ds` = the SB quote's `title` (capped at 100 chars), `U1D8B1C0045A26507C9B67995789BFF16 = "G"`; `QuDa`/`DbId`/`FcNo` are no longer sent. Every `KnQuotationLine` `Fields` carries `"@Action": "insert"`. On error, clear flag and `continue` (skips the close below).
+- **Closing the Won Forecast** — `Close-AfasForecast -ViOp "G" -OrAF (Get-SalesbuildrQuoteTotal -Items $Lines)` — runs right after a successful update, wrapped in its own `try`/`catch`: on error, logs ERROR, clears the flag, and `continue`s.
+- **Known risk**: the line insert is **not** idempotent. If the update succeeds but the Forecast close fails, the Forecast is not yet Won, so the next run re-inserts the lines (duplicates). Such an ERROR needs manual review.
 
-- For each Lost opportunity, parse the CmForecast key from its `externalIdentifier` via `ConvertFrom-ForecastExternalId` (same as 3c, no re-fetch; bad format → ERROR, clear flag) and close it in AFAS via `Close-AfasForecast` with `ViOp = "N"` (no `OrAF`, no articles/voorcalculatie). Errors clear the flag.
+### Stap 3d — close Lost forecasts
+
+- For each Lost opportunity, parse the CmForecast key from its `externalIdentifier` via `ConvertFrom-ForecastExternalId` (same as 3c, no re-fetch; bad format → ERROR, clear flag) and close it in AFAS via `Close-AfasForecast` with `ViOp = "N"` (no `OrAF`, no articles/voorcalculatie update). Errors clear the flag.
 
 ## Flow 4 — PDF: attach the SB quote PDF to the AFAS quotation (lines 1617–1720)
 
