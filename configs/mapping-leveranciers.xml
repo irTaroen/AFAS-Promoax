@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Mapping SalesBuildr leverancier (quote-regel supplier.name) -> AFAS crediteurcode.
+     Gebruikt in Flow 3 (KnQuotation): een voorcalculatieregel (artikel, werksoort en TXT/SBO/SBA) met een
+     gemapte leverancier krijgt
+       U69BD7B0B402F2007FEC9E485BB4B59C9 = AFAS-cred (crediteurcode)
+       UC61B5DF54390117579CF9AA289E985F0 = true
+     SB-naam wordt hoofdletterongevoelig vergeleken (spaties aan begin/eind genegeerd).
+     Een leverancier zonder (ingevulde) AFAS-cred geldt als niet gemapt: WARNING, beide
+     velden worden op die regel weggelaten (geen skip, watermerk loopt door). -->
+<mapping-leveranciers>
+  <leverancier SB-naam="TD Synnex" AFAS-cred="50029"/>
+  <leverancier SB-naam="Intronics" AFAS-cred="50117"/>
+  <leverancier SB-naam="Copaco" AFAS-cred="50006"/>
+  <leverancier SB-naam="SDC" AFAS-cred="50405"/>
+  <leverancier SB-naam="Exclusive Networks" AFAS-cred="50237"/>
+  <leverancier SB-naam="EET Group" AFAS-cred="50008"/>
+  <leverancier SB-naam="Lydis" AFAS-cred="50563"/>
+  <leverancier SB-naam="Ingram Micro" AFAS-cred="50013"/>
+</mapping-leveranciers>

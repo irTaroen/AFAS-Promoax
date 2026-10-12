@@ -7,18 +7,19 @@
      Kolommen komen uit SB-Categorieen-Mapping.numbers:
        SB-maincat-id = MainCategoryId, SB-naam = Name,
        AFAS-id = AFASId (Grp), AFAS-naam = AFASArtiekelgroep (omschrijving, logging).
-     Voorraad / Serienummer (true/false, default false) worden bij het aanmaken van een
-     nieuw artikel (Flow 2, FbItemArticle) meegestuurd als BiSt (voorraad bijhouden) en
-     AdSr (administratie serienummers). -->
+     Voorraad (true/false, default false) wordt bij het aanmaken van een nieuw artikel
+     (Flow 2, FbItemArticle) meegestuurd als BiSt (voorraad bijhouden). AdSr
+     (administratie serienummers) komt NIET hieruit maar uit het SB-product (isSerialized). -->
 <mapping-artikelgroepen>
-  <categorie SB-maincat-id="BUm5ppV1xwgA6zo4A2Kv" SB-naam="Accessories" AFAS-id="70" AFAS-naam="Hardware" Voorraad="false" Serienummer="false"/>
-  <categorie SB-maincat-id="a0XWJxnY7RkxS6MixhIE" SB-naam="AV &amp; Collaboration" AFAS-id="70" AFAS-naam="Hardware" Voorraad="false" Serienummer="false"/>
-  <categorie SB-maincat-id="j1CyTFHmTWxftQOY1FEj" SB-naam="Desktops &amp; laptops" AFAS-id="70" AFAS-naam="Hardware" Voorraad="false" Serienummer="false"/>
-  <categorie SB-maincat-id="UyOpp42UPGy3LKgSOQGX" SB-naam="Diensten" AFAS-id="W" AFAS-naam="Werksoorten" Voorraad="false" Serienummer="false"/>
-  <categorie SB-maincat-id="feYzt8mZXWfbdmhAr2sI" SB-naam="Managed Services" AFAS-id="10" AFAS-naam="Beheercontracten" Voorraad="false" Serienummer="false"/>
-  <categorie SB-maincat-id="LNsxu30OHVVuW2RFtf9Z" SB-naam="Modern Workplace" AFAS-id="21" AFAS-naam="Hosting &amp; Cloud" Voorraad="false" Serienummer="false"/>
-  <categorie SB-maincat-id="G3tbhCdGKoLSQjKx6AAI" SB-naam="Networking" AFAS-id="70" AFAS-naam="Hardware" Voorraad="false" Serienummer="false"/>
-  <categorie SB-maincat-id="nvG0ywJowdMHYqSepL6w" SB-naam="Security Services" AFAS-id="30" AFAS-naam="Securitycontracten" Voorraad="false" Serienummer="false"/>
-  <categorie SB-maincat-id="Td1igI5XsIbBP5zvfR01" SB-naam="Software" AFAS-id="60" AFAS-naam="Software" Voorraad="false" Serienummer="false"/>
-  <categorie SB-maincat-id="FXPoLJoZYPi278HHQMRJ" SB-naam="Zakelijke Tablets &amp; Accessoires" AFAS-id="70" AFAS-naam="Hardware" Voorraad="false" Serienummer="false"/>
+  <categorie SB-maincat-id="BUm5ppV1xwgA6zo4A2Kv" SB-naam="Accessories" AFAS-id="70" AFAS-naam="Hardware" Voorraad="false"/>
+  <categorie SB-maincat-id="a0XWJxnY7RkxS6MixhIE" SB-naam="AV &amp; Collaboration" AFAS-id="70" AFAS-naam="Hardware" Voorraad="false"/>
+  <categorie SB-maincat-id="j1CyTFHmTWxftQOY1FEj" SB-naam="Desktops &amp; laptops" AFAS-id="70" AFAS-naam="Hardware" Voorraad="false"/>
+  <categorie SB-maincat-id="UyOpp42UPGy3LKgSOQGX" SB-naam="Diensten" AFAS-id="W" AFAS-naam="Werksoorten" Voorraad="false"/>
+  <categorie SB-maincat-id="feYzt8mZXWfbdmhAr2sI" SB-naam="Managed Services" AFAS-id="10" AFAS-naam="Beheercontracten" Voorraad="false"/>
+  <categorie SB-maincat-id="LNsxu30OHVVuW2RFtf9Z" SB-naam="Modern Workplace" AFAS-id="21" AFAS-naam="Hosting &amp; Cloud" Voorraad="false"/>
+  <categorie SB-maincat-id="G3tbhCdGKoLSQjKx6AAI" SB-naam="Networking" AFAS-id="70" AFAS-naam="Hardware" Voorraad="false"/>
+  <categorie SB-maincat-id="nvG0ywJowdMHYqSepL6w" SB-naam="Security Services" AFAS-id="30" AFAS-naam="Securitycontracten" Voorraad="false"/>
+  <categorie SB-maincat-id="tsVMxJLTeRhmfH015IwL" SB-naam="Servers" AFAS-id="70" AFAS-naam="Hardware" Voorraad="false"/>
+  <categorie SB-maincat-id="Td1igI5XsIbBP5zvfR01" SB-naam="Software" AFAS-id="60" AFAS-naam="Software" Voorraad="false"/>
+  <categorie SB-maincat-id="FXPoLJoZYPi278HHQMRJ" SB-naam="Zakelijke Tablets &amp; Accessoires" AFAS-id="70" AFAS-naam="Hardware" Voorraad="false"/>
 </mapping-artikelgroepen>

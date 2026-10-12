@@ -22,7 +22,12 @@ import sys
 # Zorg dat het pakket importeerbaar is ongeacht vanwaar het script gestart wordt.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from promax_sync.afas import AfasClient  # noqa: E402
+from promax_sync.afas import (  # noqa: E402
+    AfasClient,
+    afas_error_text,
+    build_quotation_body,
+    get_forecast_status_code,
+)
 from promax_sync.config import (  # noqa: E402
     find_text,
     get_sync_override_days,
@@ -33,12 +38,15 @@ from promax_sync.config import (  # noqa: E402
 )
 from promax_sync.helpers import (  # noqa: E402
     convert_to_config_bool,
+    get_salesbuildr_main_category_id,
     parse_forecast_external_id,
+    to_json,
 )
 from promax_sync.logging_util import FLOW_LABELS, Logger, RunLog  # noqa: E402
 from promax_sync.salesbuildr import (  # noqa: E402
     SalesbuildrClient,
     get_afas_artikelgroep,
+    get_line_supplier_name,
     resolve_afas_line_item,
 )
 
@@ -50,6 +58,7 @@ CONFIG_DIR = os.path.join(PROJECT_ROOT, "configs")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.xml")
 MAPPING_FILE = os.path.join(CONFIG_DIR, "mapping-artikelgroepen.xml")
 SYNC_STATE_FILE = os.path.join(CONFIG_DIR, "last-sync-dates.xml")
+LEVERANCIERS_FILE = os.path.join(CONFIG_DIR, "mapping-leveranciers.xml")
 LOG_FILE = os.path.join(PROJECT_ROOT, "logs", "log.txt")
 
 # Dry-run-schakelaars per flow (hardcoded, net als in de PowerShell-versie). Op True
@@ -61,11 +70,16 @@ AFAS_WRITES_ON_HOLD_4 = False
 
 
 def _load_artikelgroep_mapping(logger):
-    """Laadt mapping-artikelgroepen.xml -> (Grp-map, naam-map) op SB-hoofdcategorie.id."""
+    """Laadt mapping-artikelgroepen.xml -> (Grp-map, naam-map, vlaggen-map) op SB-hoofdcategorie.id.
+
+    Per hoofdcategorie ook de artikel-vlag voor FbItemArticle: Voorraad -> BiSt
+    (ontbrekend/leeg/onbekend -> False). AdSr komt uit het SB-product (isSerialized).
+    """
     import xml.etree.ElementTree as ET
 
     artikelgroep_map = {}      # SB hoofdcategorie.id -> AFAS artikelgroep-code (Grp)
     artikelgroep_naam_map = {}  # SB hoofdcategorie.id -> AFAS artikelgroep-omschrijving (logging)
+    artikel_vlaggen_map = {}    # SB hoofdcategorie.id -> {"Voorraad": bool}
     root = ET.parse(MAPPING_FILE).getroot()
     for cat in root.findall("categorie"):
         main_cat_id = cat.get("SB-maincat-id")
@@ -73,11 +87,36 @@ def _load_artikelgroep_mapping(logger):
         if main_cat_id and afas_id and afas_id.strip():
             artikelgroep_map[main_cat_id] = afas_id
             artikelgroep_naam_map[main_cat_id] = cat.get("AFAS-naam")
+            artikel_vlaggen_map[main_cat_id] = {
+                "Voorraad": convert_to_config_bool(cat.get("Voorraad"), default=False),
+            }
     logger.info(
         f"{len(artikelgroep_map)} artikelgroep-mapping(s) (SB-hoofdcategorie -> Grp) "
         "geladen uit mapping-artikelgroepen.xml"
     )
-    return artikelgroep_map, artikelgroep_naam_map
+    return artikelgroep_map, artikelgroep_naam_map, artikel_vlaggen_map
+
+
+def _load_leverancier_mapping(logger) -> dict:
+    """Laadt mapping-leveranciers.xml -> SB supplier.name -> AFAS-crediteurcode.
+
+    Sleutels in kleine letters (hoofdletterongevoelig, net als de PowerShell-hashtable);
+    alleen leveranciers met een ingevulde AFAS-cred worden opgenomen.
+    """
+    import xml.etree.ElementTree as ET
+
+    leverancier_map = {}
+    root = ET.parse(LEVERANCIERS_FILE).getroot()
+    for lev in root.findall("leverancier"):
+        naam = (lev.get("SB-naam") or "").strip()
+        cred = (lev.get("AFAS-cred") or "").strip()
+        if naam and cred:
+            leverancier_map[naam.lower()] = cred
+    logger.info(
+        f"{len(leverancier_map)} leverancier-mapping(s) (SB-leverancier -> AFAS-crediteur) "
+        "geladen uit mapping-leveranciers.xml"
+    )
+    return leverancier_map
 
 
 def run(logger: Logger, runlog: RunLog) -> None:
@@ -196,10 +235,12 @@ def run(logger: Logger, runlog: RunLog) -> None:
     conn_voorcalc_update = find_text(config, "afas/connectors/voorcalculatie_update")
     conn_dossier_get = find_text(config, "afas/connectors/dossieritems_get").strip() or "Salesbuildr_Dossieritems"
     conn_subject_update = find_text(config, "afas/connectors/subject_update").strip() or "KnSubject"
-    conn_debcred_get = find_text(config, "afas/connectors/debcred_get").strip() or "Salesbuildr_DebiteurenCrediteuren"
 
     # Mapping SB-hoofdcategorie -> AFAS artikelgroep (Grp).
-    artikelgroep_map, artikelgroep_naam_map = _load_artikelgroep_mapping(logger)
+    artikelgroep_map, artikelgroep_naam_map, artikel_vlaggen_map = _load_artikelgroep_mapping(logger)
+
+    # Mapping SB leveranciersnaam (quote-regel supplier.name) -> AFAS-crediteurcode (Flow 3).
+    leverancier_map = _load_leverancier_mapping(logger)
 
     # SB-categorieboom (voor hoofdcategorie-herleiding). Eén keer per run opgehaald.
     category_parent_map = sb.get_category_parent_map()
@@ -254,7 +295,7 @@ def run(logger: Logger, runlog: RunLog) -> None:
                 continue
 
             existing_opportunity = sb.get_opportunity_by_ext_id(external_id)
-            if existing_opportunity is not None and existing_opportunity.get("statusId") == "closed":
+            if existing_opportunity is not None and existing_opportunity.get("statusId") in ("closed", "lost"):
                 logger.info(
                     f"[Flow 1] Opportunity al gesloten in SalesBuildr ({external_id}) — overgeslagen"
                 )
@@ -264,13 +305,14 @@ def run(logger: Logger, runlog: RunLog) -> None:
             contact_id = None
             mail = forecast.get("contactpersoonMail")
             if mail and str(mail).strip():
-                contact = sb.get_contact_by_email(mail)
+                contact = sb.get_contact_by_email(mail, company.get("id"))
                 if contact is not None:
                     contact_id = contact.get("id")
                     logger.info(f"[Flow 1] Contact gevonden op {mail} (id: {contact_id})")
             if contact_id is None:
                 logger.warning(
-                    f"[Flow 1] Geen SalesBuildr-contact gevonden voor Forecast "
+                    f"[Flow 1] Geen SalesBuildr-contact gevonden bij organisatie "
+                    f"{forecast.get('organisatie')} ({company_ext_id}) voor Forecast "
                     f"'{forecast.get('forecastOmschrijving')}' (e-mail '{mail}') — overgeslagen"
                 )
                 flow1_complete = False
@@ -351,8 +393,6 @@ def run(logger: Logger, runlog: RunLog) -> None:
             category = bron_regel.get("category") or {} if bron_regel else {}
             sb_cat_id = category.get("id")
             sb_cat_naam = category.get("name")
-            from promax_sync.helpers import get_salesbuildr_main_category_id
-
             main_cat_id = get_salesbuildr_main_category_id(sb_cat_id, category_parent_map)
             artikelgroep = get_afas_artikelgroep(
                 bron_regel.get("category") if bron_regel else None, artikelgroep_map, category_parent_map
@@ -378,12 +418,19 @@ def run(logger: Logger, runlog: RunLog) -> None:
                 )
                 continue
 
+            # Grp is hierboven gevonden, dus main_cat_id staat in de mapping.
+            voorraad = artikel_vlaggen_map[main_cat_id]["Voorraad"]
+
             try:
+                # AdSr volgt het SB-product (isSerialized), niet de categorie-mapping.
+                serienummer = sb.get_product_is_serialized(bron_regel)
                 afas.new_artikel(
-                    conn_artikelen_update, item_code, bron_regel.get("name"), artikelgroep
+                    conn_artikelen_update, item_code, bron_regel.get("name"), artikelgroep,
+                    voorraad, serienummer,
                 )
                 runlog.add_created(
-                    f"Artikel: {item_code} ('{bron_regel.get('name')}', artikelgroep {artikelgroep})"
+                    f"Artikel: {item_code} ('{bron_regel.get('name')}', artikelgroep {artikelgroep}, "
+                    f"voorraad {voorraad}, serienummer {serienummer})"
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.error(f"Fout bij aanmaken Artikel [{item_code}]: {exc}")
@@ -418,6 +465,7 @@ def run(logger: Logger, runlog: RunLog) -> None:
         lost_opportunities = outcome.lost
         won_quote_lines = outcome.lines
         won_quote_titles = outcome.titles
+        won_quotes = outcome.quotes
         logger.info(
             f"Categorisatie: {len(won_opportunities)} Won (G), {len(lost_opportunities)} Lost (N)"
         )
@@ -459,30 +507,26 @@ def run(logger: Logger, runlog: RunLog) -> None:
                 )
                 failed_item_codes.append(item_code)
 
-        # Leverancier -> AFAS-inkooprelatie (vrij veld op artikelregels).
-        line_vendor_ext_id = {}
+        # Leverancier -> AFAS-crediteurcode (vrije velden op ELKE regel met een leverancier,
+        # ook TXT-regels), via supplier.name en mapping-leveranciers.xml. Een niet-gemapte
+        # leverancier is GEEN fout: WARNING (één keer per naam), beide velden worden op die
+        # regels weggelaten (geen skip, geen watermerk-hold).
+        supplier_names = {}
         for line in all_won_lines:
-            res = line_resolution[line["id"]]
-            if res and res["Kind"] == "artikel":
-                line_vendor_ext_id[line["id"]] = sb.get_line_vendor_external_id(line)
-
-        inkooprelatie_map = {}
-        vendor_ext_ids = sorted(
-            {v for v in line_vendor_ext_id.values() if v and str(v).strip()}
-        )
-        for vendor_ext_id in vendor_ext_ids:
-            inkooprelatie = afas.get_inkooprelatie(conn_debcred_get, vendor_ext_id)
-            inkooprelatie_map[vendor_ext_id] = inkooprelatie
-            if inkooprelatie is None:
-                logger.warning(
-                    f"[Flow 3] Leverancier (Nummer {vendor_ext_id}) niet gevonden in "
-                    f"{conn_debcred_get} of zonder inkooprelatie — vrij veld inkooprelatie wordt "
-                    "weggelaten op regels met deze leverancier"
-                )
+            naam = get_line_supplier_name(line)
+            if naam:
+                supplier_names.setdefault(naam.lower(), naam)
+        for key in sorted(supplier_names):
+            naam = supplier_names[key]
+            if key in leverancier_map:
+                logger.info(f"[Flow 3] Leverancier '{naam}' -> AFAS-crediteur {leverancier_map[key]}")
             else:
-                logger.info(f"[Flow 3] Leverancier (Nummer {vendor_ext_id}) -> inkooprelatie {inkooprelatie}")
+                logger.warning(
+                    f"[Flow 3] Leverancier '{naam}' niet gemapt in mapping-leveranciers.xml — "
+                    "crediteurvelden worden weggelaten op regels met deze leverancier"
+                )
 
-        # Stap 3c: AFAS-quotation aanmaken per Won-Opportunity.
+        # Stap 3c: bestaande AFAS-quotation (KnQuotation, voorcalculatie) bijwerken per Won-Opportunity.
         for opportunity in won_opportunities:
             opportunity_id = opportunity.get("id")
 
@@ -498,105 +542,200 @@ def run(logger: Logger, runlog: RunLog) -> None:
 
             lines = won_quote_lines[opportunity_id]
 
-            quotation_exists = afas.get_quotation(conn_voorcalc_get, forecast_key.forecast_id) is not None
-
-            if quotation_exists:
-                logger.info(
-                    f"[{opportunity_id}] AFAS-quotation al aanwezig ({forecast_key.forecast_id}) — "
-                    "aanmaken overgeslagen, Forecast wordt wel gesloten"
+            # Idempotentie via de Forecast-status: het toevoegen van voorcalculatieregels
+            # (PUT met @Action=insert) is NIET idempotent. G/N = al gesloten -> overslaan.
+            afas_forecast = afas.get_forecast(conn_forecast_get, forecast_key.forecast_id)
+            if afas_forecast is None:
+                logger.warning(
+                    f"[{opportunity_id}] Forecast {forecast_key.forecast_id} niet gevonden in "
+                    f"{conn_forecast_get} — overgeslagen, watermerk vastgehouden"
                 )
-            else:
-                probleemregels = []
-                for line in lines:
-                    res = line_resolution[line["id"]]
-                    if res is None:
-                        probleemregels.append(
-                            f"regel '{line.get('name')}' (geen mpn en niet in hoofdcategorie Diensten)"
-                        )
-                    elif res["Kind"] != "diensten" and res["ItemCode"] in failed_item_codes:
-                        probleemregels.append(
-                            f"{res['Kind']} '{res['ItemCode']}' (niet beschikbaar in AFAS)"
-                        )
-                if probleemregels:
-                    logger.warning(
-                        f"[{opportunity_id}] Overgeslagen (quotation niet aangemaakt, Forecast "
-                        f"blijft open): {'; '.join(probleemregels)}"
+                flow3_complete = False
+                continue
+            # O = open -> doorgaan. Elke andere (of lege) waarde is onverwacht: overslaan +
+            # watermerk vasthouden i.p.v. gokken (doorgaan kan dubbele regels opleveren).
+            status_code = get_forecast_status_code(afas_forecast)
+            logger.info(
+                f"[{opportunity_id}] Forecast {forecast_key.forecast_id} | statusCode "
+                f"'{status_code}' ({afas_forecast.get('status')})"
+            )
+            if status_code in ("G", "N"):
+                logger.info(
+                    f"[{opportunity_id}] Forecast {forecast_key.forecast_id} is al gesloten "
+                    f"(statusCode {status_code}) — geen voorcalculatieregels toegevoegd, overgeslagen"
+                )
+                continue
+            if status_code != "O":
+                logger.warning(
+                    f"[{opportunity_id}] Forecast {forecast_key.forecast_id} heeft onverwachte "
+                    f"statusCode '{status_code}' (verwacht O/G/N) — overgeslagen, watermerk vastgehouden"
+                )
+                flow3_complete = False
+                continue
+
+            # Voorcalculatienummer in AFAS = SB-offertenummer (QuoteResponseDto.number),
+            # bijv. "2026-00380".
+            voorcalc_id = str(won_quotes[opportunity_id].get("number") or "").strip()
+            if not voorcalc_id:
+                logger.warning(
+                    f"[{opportunity_id}] Primaire SB-quote heeft geen offertenummer — "
+                    "voorcalculatienummer onbekend, overgeslagen, watermerk vastgehouden"
+                )
+                flow3_complete = False
+                continue
+
+            # De hoofd-voorcalculatie wordt in AFAS aangemaakt. We controleren NIET vooraf of
+            # hij bestaat: de PUT KnQuotation hieronder werkt hem "blind" bij. Faalt die PUT,
+            # dan wordt PAS DAN gecontroleerd of hij bestaat.
+
+            # Onmapbare regel of artikel dat niet in AFAS bestaat -> HELE opportunity
+            # overslaan. Diensten- en abonnementsregels veroorzaken NOOIT een skip.
+            probleemregels = []
+            for line in lines:
+                res = line_resolution[line["id"]]
+                if res is None:
+                    probleemregels.append(
+                        f"regel '{line.get('name')}' (geen mpn en niet in hoofdcategorie Diensten)"
                     )
-                    flow3_complete = False
-                    continue
+                elif res["Kind"] == "artikel" and res["ItemCode"] in failed_item_codes:
+                    probleemregels.append(
+                        f"{res['Kind']} '{res['ItemCode']}' (niet beschikbaar in AFAS)"
+                    )
+            if probleemregels:
+                logger.warning(
+                    f"[{opportunity_id}] Overgeslagen (quotation niet bijgewerkt, Forecast "
+                    f"blijft open): {'; '.join(probleemregels)}"
+                )
+                flow3_complete = False
+                continue
 
-                regels = []
-                for line in lines:
-                    res = line_resolution[line["id"]]
+            regels = []
+            for line in lines:
+                res = line_resolution[line["id"]]
+                # shortDescription (omschrijving op de SB-quoteregel) gaat — indien gevuld —
+                # als Ds mee op de voorcalculatieregel; anders de regelnaam (TXT) of de
+                # AFAS-standaardomschrijving van het item (werksoort/artikel, Ds weggelaten).
+                korte_omschrijving = (line.get("shortDescription") or "").strip() or None
+                regel_tekst = korte_omschrijving or line.get("name")
+                # AFAS-crediteurcode van de leverancier (mapping-leveranciers.xml), of None ->
+                # crediteurvelden weggelaten. Geldt voor ELKE regelsoort (artikel, werksoort, TXT).
+                supplier_name = get_line_supplier_name(line)
+                regel_cred_code = leverancier_map.get(supplier_name.lower()) if supplier_name else None
 
-                    if res["Kind"] == "diensten":
-                        code_bestaat = bool(res["ItemCode"] and res["ItemCode"].strip()) and diensten_exists.get(res["ItemCode"], False)
-                        if code_bestaat:
-                            # === Werksoort-regel ===
-                            regels.append(
-                                {
-                                    "ItemCode": res["ItemCode"],
-                                    "Soort": "1",
-                                    "Aantal": line.get("quantity"),
-                                    "Prijs": line.get("price"),
-                                    "Kostprijs": line.get("cost"),
-                                }
-                            )
-                        else:
-                            # === TXT-regel ===
-                            regels.append(
-                                {
-                                    "Kind": "txt",
-                                    "Tekst": line.get("name"),
-                                    "Aantal": line.get("quantity"),
-                                    "Prijs": line.get("price"),
-                                    "Kostprijs": line.get("cost"),
-                                }
-                            )
-                    else:
-                        # Artikel (mpn, VaIt=2).
-                        vendor_ext_id = line_vendor_ext_id.get(line["id"])
-                        inkooprelatie = (
-                            inkooprelatie_map.get(vendor_ext_id)
-                            if vendor_ext_id and str(vendor_ext_id).strip()
-                            else None
-                        )
+                if res["Kind"] == "abonnement":
+                    # === Abonnement -> ALTIJD TXT-regel, met de termijn in de omschrijving ===
+                    regels.append(
+                        {
+                            "Kind": "txt",
+                            "ItemCode": "SBA",
+                            "Tekst": regel_tekst,
+                            "Aantal": line.get("quantity"),
+                            "Prijs": line.get("price"),
+                            "Kostprijs": line.get("cost"),
+                            "Termijn": res["Term"],
+                            "CredCode": regel_cred_code,
+                        }
+                    )
+                elif res["Kind"] == "diensten":
+                    code_bestaat = bool(res["ItemCode"] and res["ItemCode"].strip()) and diensten_exists.get(res["ItemCode"], False)
+                    if code_bestaat:
+                        # === Werksoort-regel ===
                         regels.append(
                             {
                                 "ItemCode": res["ItemCode"],
-                                "Soort": res["VaIt"],
+                                "Soort": "1",
+                                "Omschrijving": korte_omschrijving,
                                 "Aantal": line.get("quantity"),
                                 "Prijs": line.get("price"),
                                 "Kostprijs": line.get("cost"),
-                                "Inkooprelatie": inkooprelatie,
+                                "CredCode": regel_cred_code,
                             }
                         )
-
-                if AFAS_WRITES_ON_HOLD_3:
-                    logger.warning(
-                        f"[ON HOLD] [{opportunity_id}] AFAS-quotation ({forecast_key.forecast_id}, "
-                        f"{len(regels)} regel(s)) zou aangemaakt worden — niet aangemaakt"
-                    )
+                    else:
+                        # === TXT-regel ===
+                        regels.append(
+                            {
+                                "Kind": "txt",
+                                "Tekst": regel_tekst,
+                                "Aantal": line.get("quantity"),
+                                "Prijs": line.get("price"),
+                                "Kostprijs": line.get("cost"),
+                                "CredCode": regel_cred_code,
+                            }
+                        )
                 else:
+                    # Artikel (mpn, VaIt=2).
+                    regels.append(
+                        {
+                            "ItemCode": res["ItemCode"],
+                            "Soort": res["VaIt"],
+                            "Omschrijving": korte_omschrijving,
+                            "Aantal": line.get("quantity"),
+                            "Prijs": line.get("price"),
+                            "Kostprijs": line.get("cost"),
+                            "CredCode": regel_cred_code,
+                        }
+                    )
+
+            if AFAS_WRITES_ON_HOLD_3:
+                payload = to_json(
+                    build_quotation_body(
+                        voorcalc_id,
+                        won_quote_titles[opportunity_id],
+                        regels,
+                        won_quotes[opportunity_id].get("poNumber"),
+                    )
+                )
+                logger.warning(
+                    f"[ON HOLD] [{opportunity_id}] AFAS-quotation ({voorcalc_id}) zou bijgewerkt "
+                    f"worden met {len(regels)} regel(s) — niet bijgewerkt. Payload: {payload}"
+                )
+            else:
+                try:
+                    afas.update_quotation(
+                        conn_voorcalc_update,
+                        voorcalc_id,
+                        won_quote_titles[opportunity_id],
+                        regels,
+                        won_quotes[opportunity_id].get("poNumber"),
+                    )
+                    runlog.add_created(
+                        f"AFAS-quotation bijgewerkt: offerte {voorcalc_id} (Forecast "
+                        f"{forecast_key.forecast_id}, SqNo {forecast_key.sqno}, {len(regels)} "
+                        "regel(s) toegevoegd)"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    afas_error = afas_error_text(exc)
+                    # De AFAS-foutmelding zegt niet eenduidig WAT er niet bestaat ("bestaat niet"
+                    # kan ook over een Itemcode op een regel gaan). Daarom pas NA een mislukte
+                    # PUT controleren of de hoofd-voorcalculatie zelf bestaat.
+                    voorcalc_bestaat = None
                     try:
-                        afas.new_quotation(
-                            conn_voorcalc_update,
-                            forecast_key.forecast_id,
-                            forecast_key.prid,
-                            forecast_key.sqno,
-                            won_quote_titles[opportunity_id],
-                            regels,
+                        voorcalc_bestaat = afas.get_quotation(conn_voorcalc_get, voorcalc_id) is not None
+                    except Exception:  # noqa: BLE001
+                        pass
+                    regel_codes = ", ".join(
+                        f"{r.get('ItemCode') or 'SBO'} (VaIt 3)"
+                        if r.get("Kind") == "txt"
+                        else f"{r.get('ItemCode')} (VaIt {r.get('Soort')})"
+                        for r in regels
+                    )
+                    if voorcalc_bestaat is False:
+                        logger.warning(
+                            f"[{opportunity_id}] Hoofd-voorcalculatie ({voorcalc_id}) bestaat niet in "
+                            "AFAS — overgeslagen (Forecast blijft open), watermerk vastgehouden"
                         )
-                        runlog.add_created(
-                            f"AFAS-quotation: offerte {forecast_key.forecast_id} "
-                            f"(Forecast SqNo {forecast_key.sqno}, {len(regels)} regel(s))"
+                    else:
+                        logger.error(
+                            f"[{opportunity_id}] Fout bij bijwerken AFAS-quotation ({voorcalc_id}), "
+                            f"regels: {regel_codes} — AFAS-melding: {afas_error}"
                         )
-                    except Exception as exc:  # noqa: BLE001
-                        logger.error(f"[{opportunity_id}] Fout bij aanmaken AFAS-quotation: {exc}")
-                        flow3_complete = False
-                        continue
+                    flow3_complete = False
+                    continue
 
             # Sluiten van de Won-Forecast (ViOp=G).
+            # LET OP: de regels zijn nu toegevoegd. Faalt het sluiten hieronder, dan voegt de
+            # volgende run de regels OPNIEUW toe (dubbele regels) — handmatig nakijken.
             if AFAS_WRITES_ON_HOLD_3:
                 logger.warning(
                     f"[ON HOLD] [{opportunity_id}] Forecast [SqNo {forecast_key.sqno}] zou als Won (G) "
@@ -620,14 +759,54 @@ def run(logger: Logger, runlog: RunLog) -> None:
                 continue
 
         # Stap 3d: Lost-Opportunities — alleen de AFAS Forecast op N sluiten.
+        # Zonder externalIdentifier komt de Opportunity niet uit AFAS -> INFO, geen hold.
+        # Idempotentie via de Forecast-status: een 'lost'-Opportunity wordt opnieuw opgehaald
+        # zodra zijn updatedAt verspringt, dus een al gesloten Forecast (G/N) slaan we over.
         for opportunity in lost_opportunities:
             opportunity_id = opportunity.get("id")
+
+            if not str(opportunity.get("externalIdentifier") or "").strip():
+                logger.info(
+                    f"[{opportunity_id}] Lost-Opportunity zonder externalIdentifier (niet uit AFAS) — "
+                    "geen Forecast te sluiten, overgeslagen"
+                )
+                continue
 
             forecast_key = parse_forecast_external_id(opportunity.get("externalIdentifier"))
             if forecast_key is None:
                 logger.error(
                     f"[{opportunity_id}] Onverwacht externalIdentifier-formaat "
                     f"'{opportunity.get('externalIdentifier')}' — kan PrId/SqNo niet parsen, overgeslagen"
+                )
+                flow3_complete = False
+                continue
+
+            try:
+                afas_forecast = afas.get_forecast(conn_forecast_get, forecast_key.forecast_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    f"[{opportunity_id}] Fout bij ophalen Forecast {forecast_key.forecast_id} uit AFAS: {exc}"
+                )
+                flow3_complete = False
+                continue
+            if afas_forecast is None:
+                logger.warning(
+                    f"[{opportunity_id}] Forecast {forecast_key.forecast_id} niet gevonden in "
+                    f"{conn_forecast_get} — overgeslagen, watermerk vastgehouden"
+                )
+                flow3_complete = False
+                continue
+            status_code = get_forecast_status_code(afas_forecast)
+            if status_code in ("G", "N"):
+                logger.info(
+                    f"[{opportunity_id}] Forecast {forecast_key.forecast_id} is al gesloten "
+                    f"(statusCode {status_code}) — overgeslagen"
+                )
+                continue
+            if status_code != "O":
+                logger.warning(
+                    f"[{opportunity_id}] Forecast {forecast_key.forecast_id} heeft onverwachte "
+                    f"statusCode '{status_code}' (verwacht O/G/N) — overgeslagen, watermerk vastgehouden"
                 )
                 flow3_complete = False
                 continue
@@ -690,19 +869,29 @@ def run(logger: Logger, runlog: RunLog) -> None:
                 flow4_complete = False
                 continue
 
-            # Precondiitie: de AFAS-quotation moet al bestaan (Flow 3).
-            if afas.get_quotation(conn_voorcalc_get, forecast_key.forecast_id) is None:
+            # Voorcalculatienummer in AFAS = SB-offertenummer (QuoteResponseDto.number).
+            voorcalc_id = str(quote_obj.get("number") or "").strip()
+            if not voorcalc_id:
                 logger.warning(
-                    f"[{opportunity_id}] AFAS-quotation ({forecast_key.forecast_id}) bestaat nog niet "
+                    f"[{opportunity_id}] Primaire SB-quote heeft geen offertenummer — "
+                    "voorcalculatienummer onbekend, overgeslagen, watermerk vastgehouden"
+                )
+                flow4_complete = False
+                continue
+
+            # Precondiitie: de AFAS-quotation moet al bestaan.
+            if afas.get_quotation(conn_voorcalc_get, voorcalc_id) is None:
+                logger.warning(
+                    f"[{opportunity_id}] AFAS-quotation ({voorcalc_id}) bestaat nog niet "
                     "— PDF nog niet gekoppeld, watermerk vastgehouden voor herkansing"
                 )
                 flow4_complete = False
                 continue
 
             # Idempotentie: hangt de PDF er al?
-            if afas.get_quotation_attachment(conn_dossier_get, forecast_key.forecast_id, kn_subject_stid):
+            if afas.get_quotation_attachment(conn_dossier_get, voorcalc_id, kn_subject_stid):
                 logger.info(
-                    f"[{opportunity_id}] PDF-bijlage al aanwezig bij offerte {forecast_key.forecast_id} — overgeslagen"
+                    f"[{opportunity_id}] PDF-bijlage al aanwezig bij offerte {voorcalc_id} — overgeslagen"
                 )
                 continue
 
@@ -723,12 +912,12 @@ def run(logger: Logger, runlog: RunLog) -> None:
                 flow4_complete = False
                 continue
 
-            file_name = f"SB-Offerte-{forecast_key.forecast_id}.pdf"
+            file_name = f"SB-Offerte-{voorcalc_id}.pdf"
 
             if AFAS_WRITES_ON_HOLD_4:
                 logger.warning(
                     f"[ON HOLD] [{opportunity_id}] Dossieritem '{file_name}' zou aangemaakt worden bij "
-                    f"offerte {forecast_key.forecast_id} — niet aangemaakt"
+                    f"offerte {voorcalc_id} — niet aangemaakt"
                 )
                 continue
 
@@ -737,13 +926,13 @@ def run(logger: Logger, runlog: RunLog) -> None:
                     conn_subject_update,
                     kn_subject_stid,
                     kn_subject_usid,
-                    forecast_key.forecast_id,
+                    voorcalc_id,
                     forecast_key.prid,
                     file_name,
                     pdf_base64,
                 )
                 runlog.add_created(
-                    f"PDF-bijlage: '{file_name}' bij offerte {forecast_key.forecast_id} "
+                    f"PDF-bijlage: '{file_name}' bij offerte {voorcalc_id} "
                     f"(verkooprelatie {forecast_key.prid})"
                 )
             except Exception as exc:  # noqa: BLE001

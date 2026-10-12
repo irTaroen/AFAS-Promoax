@@ -73,10 +73,27 @@ class AfasClient:
         return result
 
     def get_quotation(self, connector: str, offerte_nr: str):
-        """Bestaat de AFAS-quotation al? Filtert Salesbuildr_Voorcalculatie op offerte (=QuId)."""
+        """Bestaat de AFAS-quotation al? Filtert Salesbuildr_Voorcalculatie op offerte.
+
+        offerte = QuId = SB-offertenummer, bijv. "2026-00380".
+        """
         url = (
             f"{self.rest_url}/connectors/{connector}"
             f"?skip=0&take=1&filterfieldids=offerte&filtervalues={quote(offerte_nr, safe='')}&operatortypes=1"
+        )
+        resp = self.session.get(url)
+        resp.raise_for_status()
+        rows = resp.json().get("rows", [])
+        return rows[0] if rows else None
+
+    def get_forecast(self, connector: str, forecast_id: str):
+        """Eén Forecast via Salesbuildr_Forecasts, gefilterd op forecast (= uniek AFAS forecast-id).
+
+        Flow 3 gebruikt de statusCode als idempotentiesleutel. Geeft de rij of None.
+        """
+        url = (
+            f"{self.rest_url}/connectors/{connector}"
+            f"?filterfieldids=forecast&filtervalues={quote(str(forecast_id), safe='')}&operatortypes=1&skip=0&take=1"
         )
         resp = self.session.get(url)
         resp.raise_for_status()
@@ -93,23 +110,6 @@ class AfasClient:
         resp.raise_for_status()
         rows = resp.json().get("rows", [])
         return rows[0] if rows else None
-
-    def get_inkooprelatie(self, connector: str, nummer: str) -> Optional[str]:
-        """Herleidt een SB-leverancier (Nummer) naar de AFAS-inkooprelatie, of None."""
-        if not nummer or not str(nummer).strip():
-            return None
-        url = (
-            f"{self.rest_url}/connectors/{connector}"
-            f"?filterfieldids=Nummer&filtervalues={quote(str(nummer), safe='')}&operatortypes=1&skip=0&take=1"
-        )
-        resp = self.session.get(url)
-        resp.raise_for_status()
-        rows = resp.json().get("rows", [])
-        if rows:
-            inkooprelatie = rows[0].get("Inkooprelatie")
-            if inkooprelatie is not None and str(inkooprelatie).strip():
-                return str(inkooprelatie)
-        return None
 
     def get_quotation_attachment(self, connector: str, offerte_nr: str, subject_type: int) -> bool:
         """Hangt er al een PDF-bijlage (Type == subject_type én Ja_Nee == True) bij de offerte?"""
@@ -147,8 +147,20 @@ class AfasClient:
                 return resp.text
         return None
 
-    def new_artikel(self, connector: str, item_code: str, omschrijving: str, artikelgroep: str):
-        """Maakt een minimaal Artikel aan (FbItemArticle). Ds afgekapt op 100 tekens."""
+    def new_artikel(
+        self,
+        connector: str,
+        item_code: str,
+        omschrijving: str,
+        artikelgroep: str,
+        voorraad: bool = False,
+        serienummer: bool = False,
+    ):
+        """Maakt een minimaal Artikel aan (FbItemArticle). Ds afgekapt op 100 tekens.
+
+        BiSt = voorraad bijhouden (per hoofdcategorie uit mapping-artikelgroepen.xml),
+        AdSr = administratie serienummers (uit het SB-product: isSerialized).
+        """
         if omschrijving and len(omschrijving) > 100:
             omschrijving = omschrijving[:100]
 
@@ -162,12 +174,15 @@ class AfasClient:
                         "Grp": artikelgroep,
                         "BiUn": "St",
                         "VaRc": "2",
+                        "BiSt": voorraad,
+                        "AdSr": serienummer,
                     }
                 }
             }
         }
         self.logger.info(
-            f"Artikel aanmaken in AFAS: {item_code} - {omschrijving} (artikelgroep {artikelgroep})"
+            f"Artikel aanmaken in AFAS: {item_code} - {omschrijving} (artikelgroep {artikelgroep}, "
+            f"voorraad {voorraad}, serienummer {serienummer})"
         )
         return self.update_connector(connector, body)
 
@@ -176,18 +191,21 @@ class AfasClient:
         connector: str,
         subject_type: int,
         user_id: str,
-        forecast_id: str,
+        offerte_nr: str,
         verkooprelatie: str,
         file_name: str,
         file_stream_base64: str,
     ):
-        """Maakt een dossieritem (KnSubject) met de SB-offerte-PDF als bijlage (Flow 4)."""
+        """Maakt een dossieritem (KnSubject) met de SB-offerte-PDF als bijlage (Flow 4).
+
+        KnSubjectLink.QuId = voorcalculatie-/offertenummer (= SB-offertenummer), SfId = verkooprelatie.
+        """
         body = {
             "KnSubject": {
                 "Element": {
                     "Fields": {
                         "StId": subject_type,
-                        "Ds": f"SB Offerte - {forecast_id}",
+                        "Ds": f"SB Offerte - {offerte_nr}",
                         "Da": datetime.now().strftime("%Y-%m-%dT%H:%M"),
                         "UsId": user_id,
                     },
@@ -199,7 +217,7 @@ class AfasClient:
                                         "ToSR": True,
                                         "SfTp": 4,
                                         "SfId": verkooprelatie,
-                                        "QuId": forecast_id,
+                                        "QuId": offerte_nr,
                                     }
                                 }
                             }
@@ -220,7 +238,7 @@ class AfasClient:
         }
         self.logger.info(
             f"Dossieritem (KnSubject) aanmaken in AFAS: '{file_name}' bij offerte "
-            f"{forecast_id} / verkooprelatie {verkooprelatie}"
+            f"{offerte_nr} / verkooprelatie {verkooprelatie}"
         )
         return self.update_connector(connector, body)
 
@@ -235,9 +253,10 @@ class AfasClient:
         """Sluit een Forecast (PUT CmForecast) met verkoopstatus ViOp: G = Won, N = Lost.
 
         De samengestelde sleutel PrId + SqNo staat als @-attributen op Element-niveau,
-        NIET in Fields. OrAF (offertebedrag) alleen bij Won (G).
+        NIET in Fields. ViSt = "5" en ViRe = "00" altijd; OrAF (offertebedrag) alleen bij Won (G).
         """
         fields = {
+            "ViSt": "5",
             "ViOp": viop,
             "ViRe": "00",
             "DaSc": datetime.now().strftime("%Y-%m-%d"),
@@ -258,21 +277,53 @@ class AfasClient:
         self.logger.info(f"Forecast sluiten in AFAS: {prid} / SqNo {sqno} (ViOp={viop}{extra})")
         return self.update_connector(connector, body, method="PUT")
 
-    def new_quotation(self, connector, quid, dbid, fcno, ds, regels):
-        """Maakt een AFAS-quotation (KnQuotation, voorcalculatie) aan, incl. regels."""
-        body = build_quotation_body(quid, dbid, fcno, ds, regels)
-        self.logger.info(
-            f"AFAS-quotation aanmaken: {quid} (Forecast SqNo: {fcno}, {len(regels)} regel(s))"
-        )
-        return self.update_connector(connector, body)
+    def update_quotation(
+        self, connector: str, quid: str, ds: Optional[str], regels: list, po_number: Optional[str] = None
+    ):
+        """Werkt de BESTAANDE AFAS-quotation (KnQuotation, hoofd-voorcalculatie) bij en voegt
+        de voorcalculatieregels toe — één PUT, één transactie.
+
+        De hoofd-voorcalculatie wordt in AFAS zelf aangemaakt; deze integratie maakt hem NIET
+        aan. LET OP: niet idempotent — elke aanroep voegt de regels opnieuw toe. Flow 3
+        bewaakt dat via de Forecast-status.
+        """
+        body = build_quotation_body(quid, ds, regels, po_number)
+        self.logger.info(f"AFAS-quotation bijwerken: {quid} ({len(regels)} regel(s) toevoegen)")
+        return self.update_connector(connector, body, method="PUT")
 
 
-def build_quotation_body(quid: str, dbid: str, fcno: int, ds: Optional[str], regels: list) -> dict:
-    """Bouwt de KnQuotation-payload (kop + regels).
+def get_forecast_status_code(forecast: dict) -> str:
+    """Genormaliseerde statusCode van een Forecast-rij (Salesbuildr_Forecasts).
 
-    Drie regeltypes via VaIt: "2" ARTIKEL, "1" WERKSOORT, "3" TXT. Het type komt per
-    regel uit ``Kind`` ('txt') of ``Soort`` ("1"/"2", val terug op "2"). Bedragen als
-    string met punt-decimaal (invariant).
+    'O' = Open, 'G' = Gesloten en gescoord (gewonnen), 'N' = Gesloten, niet gescoord
+    (verloren). Getrimd en in hoofdletters; '' als het veld leeg is of ontbreekt.
+    """
+    value = forecast.get("statusCode") if forecast else None
+    return str(value if value is not None else "").strip().upper()
+
+
+def afas_error_text(exc: Exception) -> str:
+    """AFAS zet de foutomschrijving in de response-body; val terug op de exception-tekst."""
+    resp = getattr(exc, "response", None)
+    if resp is not None and resp.text:
+        return resp.text
+    return str(exc)
+
+
+def build_quotation_body(quid: str, ds: Optional[str], regels: list, po_number: Optional[str] = None) -> dict:
+    """Bouwt de KnQuotation-payload (kop + regels) — gedeeld door de echte write en de
+    dry-run (ON HOLD), zodat beide exact dezelfde payload tonen.
+
+    Kop: @QuId = SB-offertenummer (Element-attribuut), "@Action" = "update", Ds = SB-quote
+    title (max 100), vrij veld U1D8B1C0045A26507C9B67995789BFF16 = "G", vrij veld
+    UA766A69149986338FE462D83768E24DA = SB-quote poNumber (alleen als gevuld). QuDa/DbId/FcNo
+    worden NIET meegestuurd — die staan al goed in AFAS. Elke regel krijgt
+    "@Action" = "insert". Drie regeltypes via VaIt: "2" ARTIKEL, "1" WERKSOORT, "3" TXT.
+    Het type komt per regel uit ``Kind`` ('txt') of ``Soort`` ("1"/"2", val terug op "2").
+    Elke regel (ook TXT) met een gemapte leverancier (``CredCode``, uit
+    mapping-leveranciers.xml) draagt U69BD7B0B402F2007FEC9E485BB4B59C9 = crediteurcode en
+    UC61B5DF54390117579CF9AA289E985F0 = True; zonder CredCode worden beide weggelaten.
+    Bedragen als string met punt-decimaal (invariant).
     """
     # Ds (omschrijving) is in AFAS beperkt tot 100 tekens.
     if ds and len(ds) > 100:
@@ -281,34 +332,47 @@ def build_quotation_body(quid: str, dbid: str, fcno: int, ds: Optional[str], reg
     line_elements = []
     for regel in regels:
         if regel.get("Kind") == "txt":
-            # === TXT-regel (VaIt=3): Diensten-item dat NIET in AFAS bestaat ===
-            txt_ds = "{0} - aantal {1}, prijs {2}, kostprijs {3}".format(
+            # === TXT-regel (VaIt=3): Diensten-item dat NIET in AFAS bestaat, of abonnement ===
+            # ItCd = "SBO" (vaste AFAS text-item-code), of "SBA" voor abonnementen (ItemCode).
+            # Abonnement (Termijn gezet): prijs en kostprijs zijn per periode.
+            termijn = regel.get("Termijn")
+            if not termijn or not str(termijn).strip():
+                per = ""
+            elif termijn == "month":
+                per = " per maand"
+            elif termijn == "year":
+                per = " per jaar"
+            else:
+                per = f" per {termijn}"
+            txt_ds = "{0} - aantal {1}, prijs {2}{4}, kostprijs {3}{4}".format(
                 regel.get("Tekst"),
                 num_str(regel.get("Aantal")),
                 num_str(regel.get("Prijs")),
                 num_str(regel.get("Kostprijs")),
+                per,
             )
             if len(txt_ds) > 255:
                 txt_ds = txt_ds[:255]
-            line_elements.append(
-                {
-                    "Fields": {
-                        "VaIt": "3",
-                        "ItCd": "SBO",
-                        "Ds": txt_ds,
-                        "UnId": "",
-                        "QuUn": "",
-                        "Qu": "",
-                        "QuSa": "",
-                        "Upri": "",
-                        "AmCo": "",
-                    }
-                }
-            )
+            txt_fields = {
+                "@Action": "insert",
+                "VaIt": "3",
+                "ItCd": regel.get("ItemCode") or "SBO",
+                "Ds": txt_ds,
+                "UnId": "",
+                "QuUn": "",
+                "Qu": "",
+                "QuSa": "",
+                "Upri": "",
+                "AmCo": "",
+            }
+            # Ook een TXT-regel met een gemapte leverancier draagt de crediteurvelden.
+            _add_cred_fields(txt_fields, regel.get("CredCode"))
+            line_elements.append({"Fields": txt_fields})
         else:
             soort = regel.get("Soort") or "2"  # 2=artikel, 1=werksoort
             is_werksoort = soort == "1"
             fields = {
+                "@Action": "insert",
                 "VaIt": soort,
                 "ItCd": regel.get("ItemCode"),
                 "UnId": "" if is_werksoort else "St",
@@ -319,30 +383,44 @@ def build_quotation_body(quid: str, dbid: str, fcno: int, ds: Optional[str], reg
                 # Werksoorten hebben ALTIJD kostprijs 0; artikelen dragen hun eigen kostprijs.
                 "AmCo": "0" if is_werksoort else num_str(regel.get("Kostprijs")),
             }
+            # Ds = shortDescription van de SB-quoteregel, alleen als gevuld (max 255 tekens);
+            # anders weglaten zodat AFAS de standaardomschrijving van het item gebruikt.
+            omschrijving = regel.get("Omschrijving")
+            if omschrijving is not None and str(omschrijving).strip():
+                fields["Ds"] = str(omschrijving)[:255]
             if is_werksoort:
                 # Werksoort-regel (VaIt=1) draagt een extra veld StId = "N".
                 fields["StId"] = "N"
-            else:
-                # Artikelregel (VaIt=2): twee vrije velden.
-                fields["UC61B5DF54390117579CF9AA289E985F0"] = True
-                inkooprelatie = regel.get("Inkooprelatie")
-                if inkooprelatie is not None and str(inkooprelatie).strip():
-                    fields["U69BD7B0B402F2007FEC9E485BB4B59C9"] = inkooprelatie
+            # Regel met een gemapte leverancier: crediteurcode + true; anders beide weglaten.
+            _add_cred_fields(fields, regel.get("CredCode"))
             line_elements.append({"Fields": fields})
+
+    header_fields = {
+        "@Action": "update",
+        "Ds": ds,
+        # Vrij veld (KnQuotation-kop): vaste waarde "G".
+        "U1D8B1C0045A26507C9B67995789BFF16": "G",
+    }
+    # Vrij veld (KnQuotation-kop) = PO-nummer van de SB-quote; alleen meesturen als gevuld.
+    if po_number is not None and str(po_number).strip():
+        header_fields["UA766A69149986338FE462D83768E24DA"] = str(po_number)
 
     return {
         "KnQuotation": {
             "Element": {
                 "@QuId": quid,
-                "Fields": {
-                    "QuDa": datetime.now().strftime("%Y-%m-%d"),
-                    "DbId": dbid,
-                    "FcNo": fcno,
-                    "Ds": ds,
-                    # Vrij veld (KnQuotation-kop): vaste waarde "G".
-                    "U1D8B1C0045A26507C9B67995789BFF16": "G",
-                },
+                "Fields": header_fields,
                 "Objects": [{"KnQuotationLine": {"Element": line_elements}}],
             }
         }
     }
+
+
+def _add_cred_fields(fields: dict, cred_code) -> None:
+    """Crediteurvelden voor een regel met een gemapte leverancier (mapping-leveranciers.xml):
+    U69BD7B0B402F2007FEC9E485BB4B59C9 = crediteurcode, UC61B5DF54390117579CF9AA289E985F0 = True.
+    Zonder crediteurcode worden beide weggelaten.
+    """
+    if cred_code is not None and str(cred_code).strip():
+        fields["U69BD7B0B402F2007FEC9E485BB4B59C9"] = cred_code
+        fields["UC61B5DF54390117579CF9AA289E985F0"] = True

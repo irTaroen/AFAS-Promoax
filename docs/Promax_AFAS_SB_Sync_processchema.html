@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<title>Promax AFAS – SB Sync · Processchema</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800&display=swap" rel="stylesheet">
+<!--
+  Bron van docs/Promax_AFAS_SB_Sync_processchema.pdf.
+  Opnieuw genereren (macOS):
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless --no-pdf-header-footer \
+      --print-to-pdf=docs/Promax_AFAS_SB_Sync_processchema.pdf docs/Promax_AFAS_SB_Sync_processchema.html
+  Markeer wijzigingen t.o.v. de vorige versie met <span class="new">NIEUW</span>.
+-->
+<style>
+  @page { size: A4; margin: 0; }
+  :root {
+    --bg: #1a1a1a; --panel: #121212; --side: #0b0b0b; --card: #262626;
+    --text: #e8e8e8; --muted: #a8a8a8; --white: #fff;
+    --orange: #f5a03a; --purple: #9b84e0; --purple-d: #4b3596; --green: #8cbf78; --red: #f0605a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); }
+  body { font-family: 'Poppins', sans-serif; color: var(--text); font-size: 9.3pt; line-height: 1.45;
+         -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  b, strong { font-weight: 600; color: var(--white); }
+  code { font-family: Menlo, monospace; font-size: 8pt; background: #333; color: var(--text);
+         padding: 0 3pt; border-radius: 3pt; }
+  .page { width: 210mm; height: 297mm; padding: 36pt 37pt 0; position: relative; overflow: hidden;
+          page-break-after: always; break-after: page; }
+  .page:last-child { page-break-after: auto; break-after: auto; }
+  .footer { position: absolute; left: 37pt; right: 37pt; bottom: 22pt; border-top: 1px solid #333;
+            padding-top: 7pt; display: flex; gap: 12pt; font-size: 8pt; color: var(--muted); }
+  .footer .brand { color: var(--orange); font-weight: 700; letter-spacing: 3pt; }
+  .footer .num { margin-left: auto; color: var(--white); font-weight: 600; }
+
+  /* ---------- cover ---------- */
+  .title { display: inline-block; background: var(--orange); color: #1a1a1a; font-weight: 800;
+           font-size: 21pt; padding: 3pt 10pt; transform: rotate(-0.6deg); margin-bottom: 4pt; }
+  .subtitle { color: var(--muted); font-size: 10.5pt; margin-bottom: 9pt; }
+  .intro { font-size: 10pt; margin-bottom: 14pt; max-width: 450pt; }
+  .h-orange { color: var(--orange); font-weight: 700; letter-spacing: 1.2pt; font-size: 8.5pt;
+              text-transform: uppercase; margin: 6pt 0 7pt; }
+  .overview { border: 1px solid #3a3a3a; border-radius: 9pt; background: var(--panel); padding: 12pt; }
+  .when-bar { display: flex; gap: 12pt; background: linear-gradient(90deg, #2a2540, #222);
+              border-left: 3pt solid var(--purple); border-radius: 3pt; padding: 6pt 10pt; margin-bottom: 10pt; font-size: 9.3pt; }
+  .when-bar .lbl { color: var(--orange); font-weight: 700; font-size: 7.5pt; letter-spacing: 1pt; padding-top: 2pt; }
+  .sys-row { display: flex; gap: 8pt; align-items: stretch; }
+  .sys { width: 96pt; border-radius: 6pt; display: flex; flex-direction: column; justify-content: center;
+         align-items: center; text-align: center; padding: 8pt; font-size: 7pt; }
+  .sys .n { font-weight: 700; font-size: 12pt; }
+  .sys.afas { background: #4b3596; color: #ddd; border: 1px solid #7b62d0; }
+  .sys.afas .n { color: #fff; }
+  .sys.sb { background: var(--green); color: #1a2a14; }
+  .sys.sb .n { color: #12200d; }
+  .flows { flex: 1; display: flex; flex-direction: column; gap: 6pt; }
+  .flowbox { background: var(--card); border-radius: 5pt; padding: 6pt 10pt; font-size: 9pt; position: relative; }
+  .flowbox.f1 { border-left: 3pt solid var(--purple); }
+  .flowbox.f2 { border-left: 3pt solid var(--green); }
+  .flowbox .h { color: var(--orange); font-weight: 700; font-size: 7.5pt; letter-spacing: .6pt; }
+  .flowbox .arr { position: absolute; right: 10pt; top: 5pt; color: var(--purple); font-size: 8pt; }
+  .phases { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5pt; margin-top: 10pt; }
+  .phase { background: var(--card); border-top: 2pt solid var(--orange); border-radius: 3pt; text-align: center;
+           padding: 4pt 2pt; font-size: 7pt; line-height: 1.35; }
+  .phase .k { color: var(--orange); font-weight: 700; font-size: 6.5pt; letter-spacing: .8pt; display: block; }
+  .legend { margin-top: 12pt; border: 1px solid #3a3a3a; border-radius: 9pt; padding: 10pt 12pt;
+            display: grid; grid-template-columns: repeat(3, 1fr); gap: 7pt 14pt; font-size: 8pt; }
+  .legend .sq { display: inline-block; width: 8pt; height: 8pt; border-radius: 2pt; margin-right: 5pt; vertical-align: -1pt; }
+  .legend .dia { display: inline-block; width: 8pt; height: 8pt; background: var(--green); transform: rotate(45deg); margin-right: 6pt; }
+
+  /* ---------- phase pages ---------- */
+  .sheet { display: flex; border: 1px solid #333; border-left: 3pt solid var(--orange); border-radius: 9pt;
+           overflow: hidden; background: var(--panel); }
+  .sheet.green { border-left-color: var(--green); }
+  .side { width: 172pt; background: var(--side); padding: 14pt 14pt; flex-shrink: 0; }
+  .side .k { color: var(--orange); font-weight: 700; font-size: 8pt; letter-spacing: 2.4pt; }
+  .side h2 { color: var(--white); font-weight: 700; font-size: 13pt; line-height: 1.22; margin: 5pt 0 9pt; }
+  .whenbox { background: #24213a; border-left: 2pt solid var(--purple); border-radius: 3pt; padding: 5pt 9pt;
+             font-size: 8pt; line-height: 1.45; }
+  .whenbox .lbl { color: var(--orange); font-weight: 700; font-size: 7pt; letter-spacing: 1pt; display: block; }
+  .main { flex: 1; padding: 11pt 12pt 12pt; }
+  .step { background: var(--card); border-radius: 5pt; padding: 6pt 10pt 7pt; border-left: 3pt solid var(--purple); }
+  .step.dec { border-left-color: var(--green); }
+  .step.you { border-left-color: var(--orange); }
+  .badge { display: inline-block; font-weight: 700; font-size: 6.8pt; letter-spacing: .8pt; padding: 0 6pt;
+           border-radius: 8pt; margin-right: 4pt; vertical-align: 1pt; line-height: 1.6; }
+  .b-app { background: var(--purple-d); color: #fff; }
+  .b-dec { background: var(--green); color: #12200d; }
+  .b-you { background: var(--orange); color: #1a1a1a; }
+  .no { font-weight: 700; color: var(--purple); }
+  .dec .no { color: var(--green); }
+  .you .no { color: var(--orange); }
+  .new { display: inline-block; background: var(--orange); color: #1a1a1a; font-weight: 700; font-size: 6.5pt;
+         letter-spacing: .5pt; padding: 0 4pt; border-radius: 2pt; vertical-align: 1pt; line-height: 1.6; margin-left: 2pt; }
+  .branches { border-left: 1px dashed #555; margin: 4pt 0 0 8pt; padding-left: 10pt; font-size: 8.8pt; }
+  .branches div { margin: 1.5pt 0; }
+  .y { color: var(--green); font-weight: 700; }
+  .n { color: var(--red); font-weight: 700; }
+  .w { color: var(--red); font-weight: 700; }
+  .note { color: var(--muted); font-size: 8.3pt; }
+  .warnnote { color: var(--muted); font-size: 8.3pt; margin-top: 2pt; }
+  .warnnote::before { content: "▲ "; color: var(--red); }
+  .down { text-align: center; color: var(--purple); font-size: 7pt; line-height: 1; margin: 2.5pt 0; }
+  .sect { color: var(--orange); font-weight: 700; font-size: 8.5pt; letter-spacing: .6pt; text-transform: uppercase;
+          border-top: 1px dashed #444; padding-top: 8pt; margin: 9pt 0 6pt; }
+  .sect.first { border-top: 0; padding-top: 0; margin-top: 0; }
+  .logline { font-family: Menlo, monospace; font-size: 7.6pt; background: #0b0b0b; border-radius: 3pt;
+             padding: 5pt 7pt; margin: 5pt 0; color: var(--text); }
+  table.st { width: 100%; border-collapse: collapse; font-size: 8.3pt; margin: 7pt 0; }
+  table.st th { text-align: left; color: var(--orange); font-size: 7pt; letter-spacing: 1pt; padding: 4pt 7pt;
+                background: #1f1f1f; border: 1px solid #333; }
+  table.st td { padding: 5pt 7pt; border: 1px solid #333; vertical-align: top; }
+  table.st td:first-child { font-weight: 700; color: var(--white); width: 42%; }
+  .tight .main { font-size: 8.8pt; line-height: 1.38; padding-top: 9pt; }
+  .tight .branches { font-size: 8.4pt; }
+  .tight .step { padding: 5pt 9pt 6pt; }
+  .tight .sect { margin: 7pt 0 5pt; padding-top: 6pt; }
+  .tight .down { margin: 1.5pt 0; }
+  .ok { color: var(--green) !important; } .bad { color: var(--orange) !important; }
+</style>
+</head>
+<body>
+
+<!-- ============================ PAGE 1 — OVERZICHT ============================ -->
+<section class="page">
+  <div class="title">PROMAX · AFAS ⇄ SALESBUILDR SYNC</div>
+  <div class="subtitle">Processchema voor gebruikers — wat de tool doet, wanneer het gebeurt en wat er van jou wordt verwacht</div>
+  <p class="intro">Deze tool synchroniseert automatisch tussen <b>AFAS</b> en <b>Salesbuildr</b> in beide richtingen (Flow 1 t/m 4). Hij werkt met <b>peildata</b>: elke run verwerkt alleen wat sinds de vorige geslaagde run is gewijzigd — per flow een eigen peildatum.</p>
+
+  <div class="h-orange">In één oogopslag</div>
+  <div class="overview">
+    <div class="when-bar"><span class="lbl">WANNEER</span><span>Draait automatisch bij <b>elke run</b>. Verwerkt uitsluitend wijzigingen sinds de vorige geslaagde run (peildata; terugval op <b>01-01-2026</b> als er nog geen peildatum is).</span></div>
+    <div class="sys-row">
+      <div class="sys afas"><div class="n">AFAS</div>Forecasts · Artikelen · Voorcalculaties · Dossier</div>
+      <div class="flows">
+        <div class="flowbox f1"><div class="h">FLOW 1 · VAN FORECAST NAAR OPPORTUNITY</div><span class="arr">→</span>
+          Gewijzigde <b>forecasts</b> uit AFAS worden <b>opportunities</b> in Salesbuildr (mits bedrijf én een contact van dát bedrijf met e-mail bestaan).</div>
+        <div class="flowbox f2"><div class="h">FLOW 2–4 · VAN GESLOTEN OPPORTUNITY NAAR AFAS</div><span class="arr">←</span>
+          <b>Gesloten</b> opportunities worden in AFAS verwerkt: ontbrekende <b>artikelen</b> worden aangemaakt, de <b>bestaande voorcalculatie</b> (nummer = SB-offertenummer) krijgt de offerteregels (bij Won), de <b>forecast</b> wordt gesloten (Won/Lost) en de <b>offerte-PDF</b> wordt als bijlage toegevoegd.</div>
+      </div>
+      <div class="sys sb"><div class="n">SALESBUILDR</div>Opportunities · Offertes</div>
+    </div>
+    <div class="phases">
+      <div class="phase"><span class="k">FASE 0</span>Setup &amp; configuratie</div>
+      <div class="phase"><span class="k">FASE 1</span>Van Forecast naar Opportunity</div>
+      <div class="phase"><span class="k">FASE 2</span>Artikelen aanmaken</div>
+      <div class="phase"><span class="k">FASE 3</span>Voorcalculatie bijwerken &amp; Forecast sluiten</div>
+      <div class="phase"><span class="k">FASE 4</span>Offerte-PDF uploaden</div>
+      <div class="phase"><span class="k">FASE 5</span>Logging</div>
+      <div class="phase"><span class="k">FASE 6</span>Status opslaan</div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <div><span class="sq" style="background:var(--purple-d)"></span><b>App-actie</b> — wat de tool zelf doet</div>
+    <div><span class="sq" style="background:var(--orange)"></span><b>Gebruiker</b> — wat jij regelt/aanlevert</div>
+    <div><span class="dia"></span><b>Beslissing</b> — ja/nee-splitsing</div>
+    <div><span class="sq" style="background:var(--purple)"></span><b>Timing</b> — wanneer / peildatum</div>
+    <div><span class="w">▲ Waarschuwing / overslaan / fout</span></div>
+    <div><span class="new">NIEUW</span> gewijzigd t.o.v. de vorige versie</div>
+  </div>
+
+  <div class="footer"><span class="brand">VOXTUR</span><span>Promax AFAS – SB Sync · Processchema · versie 12 oktober 2026</span><span class="num">1</span></div>
+</section>
+
+<!-- ============================ PAGE 2 — FASE 0 ============================ -->
+<section class="page">
+  <div class="sheet">
+    <div class="side">
+      <div class="k">FASE 0</div>
+      <h2>SETUP &amp; INITIALISATIE</h2>
+      <div class="whenbox"><span class="lbl">WANNEER</span>Bij elke start, vóór de synchronisatie. Gebeurt altijd.</div>
+    </div>
+    <div class="main">
+      <div class="step you"><span class="badge b-you">JIJ</span><span class="no">0.1</span> Is <code>&lt;OverrideDays&gt;</code> ingesteld? <b>(testinstelling die jij bepaalt)</b>
+        <div class="branches">
+          <div><span class="y">JA →</span> <b>alle vier de flows</b> synchen vanaf <b>N dagen geleden</b> i.p.v. hun peildatum (geeft een <span class="w">WAARSCHUWING</span> in de log, blijft actief tot je hem leegmaakt).</div>
+          <div><span class="n">NEE →</span> elke flow gebruikt zijn eigen peildatum.</div>
+        </div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step you"><span class="badge b-you">JIJ</span><span class="no">0.2</span> Zorg vooraf dat de bestanden in <code>configs\</code> correct en volledig gevuld zijn: <code>config.xml</code> (zie 0.3) en <code>mapping-artikelgroepen.xml</code> (artikelgroep en <b>Voorraad</b> per hoofdcategorie). <span class="new">NIEUW</span></div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">0.3</span> Leest <code>config.xml</code>: <b>modus</b> (1 = LIVE, 2 = TEST — bepaalt welke AFAS-omgeving en welk token gebruikt worden), Salesbuildr-URL + API-sleutel, connectornamen en welke flows aan/uit staan.</div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">0.4</span> Leest de peildata uit <code>last-sync-dates.xml</code> — <b>één datum per flow</b> (Flow 1 t/m 4). Ontbreekt een datum → terugval op <b>01-01-2026</b>.</div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">0.5</span> Controleert of verplichte configwaarden zijn ingevuld (leeg → <span class="w">stopt</span>). Maakt verbinding met AFAS en Salesbuildr.</div>
+      <div class="down">▼</div>
+      <div class="step dec"><span class="badge b-dec">BESLISSING</span><span class="no">0.6</span> Valideert de inloggegevens met een lichte <code>GET</code> naar AFAS (<code>/metainfo</code>) en Salesbuildr (<code>/opportunity?size=1</code>). Gaf één van beide <b>HTTP 401</b> terug?
+        <div class="branches">
+          <div><span class="y">JA →</span> <span class="w">WAARSCHUWING(en)</span> loggen en <b>stoppen</b>: er draaien geen flows en de peildata blijven ongewijzigd.</div>
+          <div><span class="n">NEE →</span> ga verder.</div>
+        </div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">0.7</span> <b>Alleen in TEST-modus:</b> Flow 2–4 verwerken uitsluitend opportunities van <b>één testklant</b> (uit de config), zodat een testrun geen andere klanten raakt.</div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">0.8</span> Laadt <code>mapping-artikelgroepen.xml</code> (SB-hoofdcategorie → AFAS-artikelgroep + Voorraad) en haalt de Salesbuildr-categorieën op om subcategorieën naar hun hoofdcategorie te herleiden. <span class="new">NIEUW</span></div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand">VOXTUR</span><span>Promax AFAS – SB Sync</span><span class="num">2</span></div>
+</section>
+
+<!-- ============================ PAGE 3 — FASE 1 ============================ -->
+<section class="page">
+  <div class="sheet">
+    <div class="side">
+      <div class="k">FASE 1 · FLOW 1</div>
+      <h2>VAN FORECAST NAAR OPPORTUNITY</h2>
+      <div class="whenbox"><span class="lbl">WANNEER</span>Alleen forecasts die zijn gewijzigd ná de Flow 1-peildatum.</div>
+    </div>
+    <div class="main">
+      <div class="step you"><span class="badge b-you">JIJ / VEREISTE</span><span class="no">1.1</span> Elke te synchroniseren forecast heeft een <b>contact</b> nodig met een <b>e-mailadres</b> dat aan een Salesbuildr-contact <b>van hetzelfde bedrijf</b> gekoppeld kan worden. Een contact is verplicht. <span class="new">NIEUW</span>
+        <div class="branches">
+          <div><span class="n">Geen e-mail / geen match bij dit bedrijf →</span> <span class="w">WAARSCHUWING</span>, forecast overslaan (peildatum blijft staan voor herkansing). <b>→ Actie voor jou:</b> zorg voor een geldig contact-e-mailadres dat in Salesbuildr bij het juiste bedrijf hoort. <span class="note">(Hetzelfde e-mailadres bij een ánder bedrijf telt niet — Salesbuildr weigert dat.)</span></div>
+          <div><span class="y">Wel gekoppeld →</span> het contact wordt aan de opportunity gekoppeld.</div>
+        </div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">1.2</span> Haalt de AFAS-forecasts op die zijn gewijzigd sinds de peildatum (gepagineerd).</div>
+      <div class="sect">Voor elke forecast:</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">1.3</span> Bouwt een unieke sleutel (<code>externalIdentifier</code>, bevat forecastnummer, volgnummer en verkooprelatie) en de bedrijfssleutel (<code>companyExtId</code>).</div>
+      <div class="down">▼</div>
+      <div class="step dec"><span class="badge b-dec">BESLISSING</span><span class="no">1.4</span> Bestaat het <b>bedrijf</b> in Salesbuildr?
+        <div class="branches">
+          <div><span class="n">NEE →</span> <span class="w">WAARSCHUWING</span>, flow niet compleet, sla deze forecast over.</div>
+          <div><span class="y">JA →</span> ga verder (contact zoeken bij dít bedrijf, zie 1.1).</div>
+        </div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step dec"><span class="badge b-dec">BESLISSING</span><span class="no">1.5</span> Is de opportunity in Salesbuildr al <b>gesloten</b>?
+        <div class="branches">
+          <div><span class="y">JA →</span> loggen en overslaan (een gesloten kans wordt nooit heropend).</div>
+          <div><span class="n">NEE →</span> ga verder.</div>
+        </div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">1.6</span> Bouwt de opportunity: naam, bedrijf, kans (scoringskans/100), omzet, eigenaar, contact en eventueel de verwachte sluitdatum.</div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">1.7</span> Slaat de opportunity op in Salesbuildr (aanmaken of bijwerken). Bij een fout → <span class="w">ERROR</span> en flow niet compleet.</div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand">VOXTUR</span><span>Promax AFAS – SB Sync</span><span class="num">3</span></div>
+</section>
+
+<!-- ============================ PAGE 4 — FASE 2 ============================ -->
+<section class="page">
+  <div class="sheet">
+    <div class="side">
+      <div class="k">FASE 2 · FLOW 2</div>
+      <h2>ARTIKELEN AANMAKEN</h2>
+      <div class="whenbox"><span class="lbl">WANNEER</span>Gesloten opportunities met een sluitdatum ná de Flow 2-peildatum.</div>
+    </div>
+    <div class="main">
+      <div class="step"><span class="badge b-app">APP</span><span class="no">2.1</span> Haalt alle gesloten opportunities op (gepagineerd) en filtert op sluitdatum na de peildatum.
+        <div class="note" style="margin-top:3pt">Veiligheidsschakelaar <code>AfasWritesOnHold</code>: staat deze aan, dan wordt alles alleen bekeken en wordt er níéts naar AFAS geschreven.</div>
+      </div>
+      <div class="sect">Bepaal per opportunity: Won of Lost</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">2.2</span> Haalt de <b>primaire offerte</b> op (<code>primary:true</code>) inclusief alle offerteregels. Bij netwerk-/API-fout → <span class="w">ERROR</span>, flow niet compleet.</div>
+      <div class="down">▼</div>
+      <div class="step dec"><span class="badge b-dec">BESLISSING</span><span class="no">2.3</span> Bestaat er een primaire offerte én is de status <b>"approved"</b>?
+        <div class="branches">
+          <div><span class="y">JA →</span> <b>WON</b>: de offerteregels worden verwerkt (hieronder).</div>
+          <div><span class="n">NEE →</span> <b>LOST</b>: niets te doen in deze flow (geen fout).</div>
+        </div>
+      </div>
+      <div class="sect">Ontbrekende artikelen aanmaken — alleen Won</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">2.4</span> Bepaalt per offerteregel het type: <b>mpn</b> aanwezig → artikel · geen mpn maar hoofdcategorie <b>"Diensten"</b> → dienst (wordt in Fase 3 afgehandeld, nooit aangemaakt) · anders → niet te koppelen.</div>
+      <div class="down">▼</div>
+      <div class="step dec"><span class="badge b-dec">BESLISSING</span><span class="no">2.5</span> Per uniek artikel (mpn): bestaat het al in AFAS?
+        <div class="branches">
+          <div><span class="y">JA →</span> overslaan (bestaat al).</div>
+          <div><span class="n">NEE →</span> is de hoofdcategorie gemapt in <code>mapping-artikelgroepen.xml</code>? Nee → <span class="w">WAARSCHUWING</span>, artikel niet aangemaakt, flow niet compleet. Ja → maak het artikel aan (bij fout → <span class="w">ERROR</span>).</div>
+        </div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">2.6</span> Een nieuw artikel krijgt: code = mpn, omschrijving = productnaam, de artikelgroep van de hoofdcategorie, <b>Voorraad bijhouden</b> volgens de mapping (standaard uit) en <b>Administratie serienummers</b> volgens het Salesbuildr-product (veld <i>Serialized</i>; leeg = uit). <span class="new">NIEUW</span></div>
+      <div class="down">▼</div>
+      <div class="step you"><span class="badge b-you">JIJ</span><span class="no">2.7</span> Vul per hoofdcategorie in <code>mapping-artikelgroepen.xml</code> de AFAS-artikelgroep en zet <b>Voorraad</b> op true waar nodig. Zet in Salesbuildr bij het <b>product</b> of het serienummer-geregistreerd is. Een ontbrekend artikel houdt in Fase 3 de hele voorcalculatie tegen. <span class="new">NIEUW</span></div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand">VOXTUR</span><span>Promax AFAS – SB Sync</span><span class="num">4</span></div>
+</section>
+
+<!-- ============================ PAGE 5 — FASE 3 ============================ -->
+<section class="page tight">
+  <div class="sheet">
+    <div class="side">
+      <div class="k">FASE 3 · FLOW 3</div>
+      <h2>VOORCALCULATIE BIJWERKEN EN FORECAST SLUITEN</h2>
+      <div class="whenbox"><span class="lbl">WANNEER</span>Gesloten opportunities met een sluitdatum ná de Flow 3-peildatum. Eigen peildatum, onafhankelijk van Fase 2.</div>
+    </div>
+    <div class="main">
+      <div class="step"><span class="badge b-app">APP</span><span class="no">3.1</span> Haalt de gesloten opportunities op en bepaalt Won/Lost (zelfde regels als 2.2–2.3). Controleert per regel: bestaat de dienst in AFAS (→ werksoortregel, anders tekstregel), bestaat het artikel in AFAS, en wat is de <b>inkooprelatie</b> van de leverancier (ontbreekt → veld leeg, geen probleem).</div>
+      <div class="sect">Per Won-opportunity</div>
+      <div class="step dec"><span class="badge b-dec">BESLISSING</span><span class="no">3.2</span> Zoekt de <b>forecast in AFAS</b> op en kijkt naar de status.
+        <div class="branches">
+          <div><span class="n">Niet gevonden →</span> <span class="w">WAARSCHUWING</span>, overslaan, later opnieuw.</div>
+          <div><span class="y">Al gesloten (Gewonnen of Verloren) →</span> overslaan — de regels staan er al of horen er niet bij. <b>Dit voorkomt dubbele regels.</b></div>
+          <div><span class="y">Open →</span> ga verder.</div>
+          <div><span class="n">Onbekende status →</span> <span class="w">WAARSCHUWING</span>, overslaan, later opnieuw.</div>
+        </div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step dec"><span class="badge b-dec">BESLISSING</span><span class="no">3.3</span> Bepaalt het <b>voorcalculatienummer</b>: dat is het <b>SB-offertenummer</b> van de primaire offerte (bijv. <code>2026-00380</code>). Is dat nummer ingevuld? <span class="new">NIEUW</span>
+        <div class="branches">
+          <div><span class="n">NEE →</span> <span class="w">WAARSCHUWING</span>, overslaan; forecast blijft open en wordt de volgende run opnieuw geprobeerd.</div>
+          <div><span class="y">JA →</span> ga verder. <span class="note">De tool maakt de voorcalculatie niet zelf aan — die ontstaat in AFAS.</span></div>
+        </div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step dec"><span class="badge b-dec">BESLISSING</span><span class="no">3.4</span> Is er een regel die niet te koppelen is, of een artikel dat (nog) niet in AFAS bestaat?
+        <div class="branches">
+          <div><span class="n">JA →</span> <span class="w">WAARSCHUWING</span>, sla de hele opportunity over (forecast blijft open voor herkansing).</div>
+          <div><span class="y">NEE →</span> ga verder. <span class="note">(Dienstregels veroorzaken dit nooit.)</span></div>
+        </div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">3.5</span> <b>Werkt de bestaande voorcalculatie bij</b>: omschrijving = offertetitel, offertestatus = Gewonnen, en <b>voegt alle offerteregels toe</b> (artikel-, werksoort- of tekstregel) in één keer. Er wordt niet vooraf gecontroleerd of de voorcalculatie bestaat. <span class="new">NIEUW</span>
+        <div class="branches">
+          <div><span class="n">AFAS meldt: voorcalculatie bestaat niet →</span> <span class="w">WAARSCHUWING</span>, overslaan; forecast blijft open, later opnieuw.</div>
+          <div><span class="n">Andere fout →</span> <span class="w">ERROR</span> met de foutmelding van AFAS, overslaan.</div>
+        </div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">3.6</span> Sluit de forecast als <b>Won</b> en boekt het bedrag (som van prijs × aantal × (1 − korting)).
+        <div class="warnnote">Mislukt alléén deze stap, dan staan de regels er al maar is de forecast nog open: kijk zo'n <b>ERROR</b> handmatig na, anders voegt de volgende run de regels nog een keer toe.</div>
+      </div>
+      <div class="sect">Lost-forecasts sluiten</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">3.7</span> Sluit per verloren opportunity de bijbehorende forecast als <b>Lost</b> (zonder regels of bedrag). Bij fout → <span class="w">ERROR</span>, flow niet compleet.</div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand">VOXTUR</span><span>Promax AFAS – SB Sync</span><span class="num">5</span></div>
+</section>
+
+<!-- ============================ PAGE 6 — FASE 4 ============================ -->
+<section class="page">
+  <div class="sheet">
+    <div class="side">
+      <div class="k">FASE 4 · FLOW 4</div>
+      <h2>OFFERTE-PDF UPLOADEN IN AFAS</h2>
+      <div class="whenbox"><span class="lbl">WANNEER</span>Per run, aansluitend op Flow 3. Verwerkt opportunities die zijn gesloten sinds de Flow 4-peildatum.</div>
+    </div>
+    <div class="main">
+      <div class="step"><span class="badge b-app">APP</span><span class="no">4.1</span> Zoekt recent gesloten deals: alle Salesbuildr-opportunities die zijn gesloten sinds de vorige geslaagde Flow 4-run.</div>
+      <div class="down">▼</div>
+      <div class="step dec"><span class="badge b-dec">BESLISSING</span><span class="no">4.2</span> Is de deal gewonnen (Won)?
+        <div class="branches">
+          <div><span class="y">WON →</span> krijgt een PDF, ga verder.</div>
+          <div><span class="n">LOST →</span> wordt genegeerd (dit is normaal, geen fout).</div>
+        </div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step dec"><span class="badge b-dec">BESLISSING</span><span class="no">4.3</span> Bestaat de bijbehorende AFAS-voorcalculatie? Er wordt gezocht op het <b>SB-offertenummer</b> (bijv. <code>2026-00380</code>); de voorcalculatie zelf ontstaat in AFAS. <span class="new">NIEUW</span>
+        <div class="branches">
+          <div><span class="n">Geen offertenummer / NEE →</span> wachten en volgende run opnieuw proberen — er wordt nooit een PDF gehangen aan een offerte die er nog niet is.</div>
+          <div><span class="y">JA →</span> ga verder.</div>
+        </div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step dec"><span class="badge b-dec">BESLISSING</span><span class="no">4.4</span> Is de PDF al gekoppeld (van een eerdere run)?
+        <div class="branches">
+          <div><span class="y">JA →</span> overslaan — dit voorkomt dubbele bijlagen.</div>
+          <div><span class="n">NEE →</span> ga verder.</div>
+        </div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">4.5</span> Downloadt de offerte-PDF uit Salesbuildr. Is er geen PDF beschikbaar → deze deal overslaan en later opnieuw proberen.</div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">4.6</span> Uploadt de PDF naar AFAS als document (dossieritem), gekoppeld aan de juiste klant en offerte, met een bestandsnaam als <code>SB-Offerte-2026-00380.pdf</code>. <span class="new">NIEUW</span></div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">4.7</span> Bij een fout in een van deze stappen → <span class="w">ERROR</span>, flow niet compleet: de deal wordt de volgende run opnieuw geprobeerd.</div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand">VOXTUR</span><span>Promax AFAS – SB Sync</span><span class="num">6</span></div>
+</section>
+
+<!-- ============================ PAGE 7 — FASE 5 ============================ -->
+<section class="page">
+  <div class="sheet green">
+    <div class="side">
+      <div class="k" style="color:var(--green)">FASE 5</div>
+      <h2>LOGGING — WAT ER WORDT GELOGD</h2>
+      <div class="whenbox"><span class="lbl">WANNEER</span>Het live-log loopt de hele run mee; het samenvattingsblok wordt aan het eind geschreven — óók bij een vroege crash of gefaalde credential-check (0.6).</div>
+    </div>
+    <div class="main">
+      <div class="step"><span class="badge b-app">APP</span><b>1 · Live console-log (gedetailleerd)</b><br>Live commentaar op het scherm; elke regel heeft een tijdstempel, een niveau en een bericht:
+        <div class="logline">[2026-10-12 09:15:03] [INFO] === Flow 3: Quotations — gewonnen SB-quotations → AFAS-quotation ===</div>
+        <div><span class="y">INFO</span> — normale voortgang.</div>
+        <div><span class="bad" style="font-weight:700">WARNING</span> — iets overgeslagen, wordt volgende run opnieuw geprobeerd (niet kapot).</div>
+        <div><span class="w">ERROR</span> — er is echt iets mislukt.</div>
+        <div class="note">Uitgebreid; verdwijnt als het venster sluit — om een run live te volgen.</div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><b>2 · Samenvattingslog — <code>logs/log.txt</code></b><br>Aan het eind van elke run komt bovenaan een kort samenvattingsblok (<b>nieuwste run bovenaan</b>, oudere schuiven omlaag). Elk blok: <b>RUN</b>-header + tijdstempel, dan één sectie per flow (+ "Algemeen" voor setup/credentials). Per flow:
+        <div class="branches">
+          <div><span class="bad" style="font-weight:700">a) Status</span> — uitkomst van de flow (zie tabel).</div>
+          <div><span class="bad" style="font-weight:700">b) Aangemaakt/verwerkt</span> — tijdstempellijst van wat gelukt is (opportunities, artikelen, bijgewerkte voorcalculaties, gesloten forecasts, PDF's).</div>
+          <div><span class="bad" style="font-weight:700">c) Waarschuwingen/fouten</span> — WARNING + ERROR (INFO blijft op de console). Niets → "(geen bijzonderheden)".</div>
+        </div>
+      </div>
+      <table class="st">
+        <tr><th>STATUS</th><th>BETEKENIS</th></tr>
+        <tr><td class="ok">SUCCES — state bijgewerkt</td><td>Alles gelukt; de flow zette zijn peildatum vooruit.</td></tr>
+        <tr><td class="bad">ONVOLLEDIG — state NIET bijgewerkt</td><td>Iets overgeslagen of mislukt; peildatum vastgehouden, dus volgende run opnieuw.</td></tr>
+        <tr><td>UITGESCHAKELD — state ongewijzigd</td><td>De flow stond uit in de config; er is niets gedaan.</td></tr>
+      </table>
+      <div class="step you"><span class="badge b-you">VOOR JOU</span> Check <code>logs/log.txt</code>: lees het <b>bovenste blok</b> — de <b>Status</b>-regel per flow zegt in één oogopslag of het gezond is. Een <b>WARNING</b> is meestal zelfherstellend; ingrijpen pas als dezelfde waarschuwing blíjft terugkomen. Een <b>ERROR</b> bij het sluiten van een gewonnen forecast (3.6) altijd direct nakijken.</div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand">VOXTUR</span><span>Promax AFAS – SB Sync</span><span class="num">7</span></div>
+</section>
+
+<!-- ============================ PAGE 8 — FASE 6 ============================ -->
+<section class="page">
+  <div class="sheet">
+    <div class="side">
+      <div class="k">FASE 6</div>
+      <h2>STATUS OPSLAAN &amp; AFRONDEN</h2>
+      <div class="whenbox"><span class="lbl">WANNEER</span>Aan het einde van elke run. Bepaalt wat de volgende run oppakt.</div>
+    </div>
+    <div class="main">
+      <div class="step dec"><span class="badge b-dec">BESLISSING</span><span class="no">6.1</span> Peildatum bijwerken — <b>voor elke flow (1 t/m 4) apart</b>:
+        <div class="branches">
+          <div><b>Uitgeschakeld</b> → peildatum ongewijzigd.</div>
+          <div><span class="y">Compleet →</span> peildatum op "nu" (volgende run pakt alleen nieuwere wijzigingen op).</div>
+          <div><span class="n">Niet compleet →</span> peildatum vasthouden (<span class="w">WAARSCHUWING</span>): de overgeslagen items worden bij de volgende run opnieuw geprobeerd.</div>
+        </div>
+        <div class="note" style="margin-top:3pt">Een verloren deal of een al afgesloten forecast telt níét als "overgeslagen" en houdt de peildatum dus niet tegen.</div>
+      </div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">6.2</span> Een fatale fout ergens in het proces wordt op het hoogste niveau opgevangen en gelogd als <span class="w">"Fatale fout"</span> — de run stopt netjes en geen enkele peildatum schuift op.</div>
+      <div class="down">▼</div>
+      <div class="step"><span class="badge b-app">APP</span><span class="no">6.3</span> Einde van de run.</div>
+      <div class="sect">Kort samengevat — wat betekent dit voor jou?</div>
+      <div class="step you"><span class="badge b-you">ONTHOUD</span>
+        <b>1.</b> Vul de <code>configs\</code>-bestanden correct in, inclusief Voorraad per hoofdcategorie; serienummerregistratie stel je in bij het product in Salesbuildr.
+        <b>2.</b> Elke opportunity heeft een <b>bedrijf</b> én een <b>contact met geldig e-mailadres bij dát bedrijf</b> in Salesbuildr nodig.
+        <b>3.</b> De <b>voorcalculatie moet in AFAS bestaan</b> met het SB-offertenummer als nummer; de tool vult hem met de offerteregels zodra de deal gewonnen is.
+        <b>4.</b> De offerte-PDF van gewonnen deals wordt automatisch als bijlage in AFAS gezet.
+        <b>5.</b> Overgeslagen items zijn geen verlies: dankzij de peildata worden ze automatisch opnieuw geprobeerd zodra de gegevens kloppen.
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span class="brand">VOXTUR</span><span>Promax AFAS – SB Sync</span><span class="num">8</span></div>
+</section>
+
+</body>
+</html>

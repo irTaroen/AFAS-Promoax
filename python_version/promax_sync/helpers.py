@@ -38,7 +38,7 @@ class ForecastKey:
     __slots__ = ("forecast_id", "sqno", "prid")
 
     def __init__(self, forecast_id: str, sqno: int, prid: str) -> None:
-        self.forecast_id = forecast_id  # uniek AFAS forecast-id -> QuId (voorcalc-offertenr)
+        self.forecast_id = forecast_id  # uniek AFAS forecast-id -> get_forecast (status/idempotentie)
         self.sqno = sqno                # volgnummer -> CmForecast @SqNo / KnQuotation FcNo
         self.prid = prid                # verkooprelatie -> CmForecast @PrId / KnQuotation DbId
 

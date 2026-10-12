@@ -98,10 +98,13 @@ class SalesbuildrClient:
     # ── opportunities ───────────────────────────────────────────────────────────
 
     def get_closed_opportunities(self, since_date: datetime, company_id_filter: Optional[str] = None) -> list:
-        """Alle 'closed' Opportunities (server-side), client-side gefilterd op closedAt > since_date.
+        """Alle 'closed' en 'lost' Opportunities (server-side), client-side gefilterd op
+        sluitingsdatum > since_date.
 
         De SB search-API kent geen >/< operatoren, vandaar het server-side
-        statusId:closed-filter + een client-side datumfilter op 'closedAt'.
+        statusId:closed|lost-filter + een client-side datumfilter. Voor 'closed' is dat
+        'closedAt'; een 'lost'-Opportunity heeft GEEN closedAt — daar 'updatedAt'.
+        Records zonder bruikbare datum worden overgeslagen.
         ``company_id_filter`` (alleen TEST/mode 2) beperkt tot één klant (company.id).
         """
         all_results: list = []
@@ -111,7 +114,7 @@ class SalesbuildrClient:
 
         while True:
             response = self.request(
-                f"{self.uri}/public-api/opportunity?filters=statusId%3Aclosed&size={size}&from={from_}"
+                f"{self.uri}/public-api/opportunity?filters=statusId%3Aclosed%7Clost&size={size}&from={from_}"
             )
             all_results.extend(response.get("results", []))
             total = response.get("total", 0)
@@ -119,10 +122,17 @@ class SalesbuildrClient:
             if len(all_results) >= total:
                 break
 
+        def _sluit_datum(opp):
+            if opp.get("closedAt"):
+                return opp["closedAt"]
+            if opp.get("statusId") == "lost":
+                return opp.get("updatedAt")
+            return None
+
         filtered = [
             opp
             for opp in all_results
-            if opp.get("closedAt") and _parse_dt(opp["closedAt"]) > since_date
+            if _sluit_datum(opp) and _parse_dt(_sluit_datum(opp)) > since_date
         ]
 
         if company_id_filter and company_id_filter.strip():
@@ -191,16 +201,24 @@ class SalesbuildrClient:
 
     # ── contacts ──────────────────────────────────────────────────────────────
 
-    def get_contact_by_email(self, email: str):
-        """Zoekt een Contact op e-mail (vrije-tekst query), exacte case-insensitieve match op 'email'."""
+    def get_contact_by_email(self, email: str, company_id: Optional[str] = None):
+        """Zoekt een Contact op e-mail (vrije-tekst query), exacte case-insensitieve match op 'email'.
+
+        Met ``company_id`` worden alleen contacten van díe Company geaccepteerd: hetzelfde
+        e-mailadres kan bij meerdere companies bestaan, en SB weigert een Opportunity-upsert
+        waarvan het contact niet bij de opportunity-company hoort (HTTP 400).
+        """
         if not email or not email.strip():
             return None
         encoded = quote(email, safe="")
         response = self.request(f"{self.uri}/public-api/contact?query={encoded}&size=100")
         contacts = response.get("results") if isinstance(response, dict) and response.get("results") else response
         for contact in contacts or []:
-            if contact.get("email") and contact["email"].lower() == email.lower():
-                return contact
+            if not (contact.get("email") and contact["email"].lower() == email.lower()):
+                continue
+            if company_id and company_id.strip() and contact.get("companyId") != company_id:
+                continue
+            return contact
         return None
 
     # ── quotes ──────────────────────────────────────────────────────────────────
@@ -209,16 +227,18 @@ class SalesbuildrClient:
         """De PRIMAIRE quote (primary:true) van een Opportunity, of None.
 
         Filtert de quote-endpoint op 'opportunity.id' (OpportunityResponseDto heeft geen
-        quoteId). GEEN fallback naar een andere approved quote.
+        quoteId). GEEN fallback naar een andere approved quote. De search-endpoint geeft
+        GEEN 'items' mee, dus de primaire quote wordt altijd volledig opgehaald
+        (GET /public-api/quote/{id}).
         """
         response = self.request(
             f"{self.uri}/public-api/quote?filters=opportunity.id%3A{opportunity_id}&size=100"
         )
         quotes = response.get("results", []) if response else []
-        for quote_obj in quotes:
-            if quote_obj.get("primary") is True:
-                return quote_obj
-        return None
+        primary = next((q for q in quotes if q.get("primary") is True), None)
+        if primary is None:
+            return None
+        return self.request(f"{self.uri}/public-api/quote/{primary['id']}")
 
     def get_quote_pdf(self, quote_id: str) -> Optional[str]:
         """PDF van een SB-quote als Base64-string (voor KnSubjectAttachment.FileStream).
@@ -299,20 +319,18 @@ class SalesbuildrClient:
                 return str(val).strip()
         return None
 
-    def get_line_vendor_external_id(self, line: dict) -> Optional[str]:
-        """Herleidt de leverancier-externalId van een regel via het product (vendor -> company)."""
+    def get_product_is_serialized(self, line: dict) -> bool:
+        """Leest product.isSerialized (stuurt AdSr in Flow 2); altijd via een product-fetch.
+
+        Geen product of veld leeg (nullable) -> False.
+        """
         product_ref = line.get("product")
         if not product_ref or not str(product_ref.get("id") or "").strip():
-            return None
-
+            return False
         product = self.get_product_by_id(product_ref["id"])
-        if not product or not str(product.get("vendor") or "").strip():
-            return None
-
-        vendor = self.get_company_by_id(str(product["vendor"]))
-        if not vendor or not str(vendor.get("externalIdentifier") or "").strip():
-            return None
-        return str(vendor["externalIdentifier"]).strip()
+        if not product or product.get("isSerialized") is None:
+            return False
+        return bool(product["isSerialized"])
 
     # ── gedeelde Won/Lost-categorisatie ───────────────────────────────────────
 
@@ -320,8 +338,9 @@ class SalesbuildrClient:
         """Categoriseert gesloten Opportunities als Won of Lost o.b.v. UITSLUITEND de primaire quote.
 
         Won: closed + primaire quote status == 'approved'. Lost: closed + geen/niet-
-        goedgekeurde primaire quote (GEEN fout). Een écht mislukte quote-fetch zet
-        all_ok = False; de aanroeper houdt dan zijn watermerk vast.
+        goedgekeurde primaire quote (GEEN fout), of opportunity statusId 'lost' (quote wordt
+        dan niet opgehaald). Een écht mislukte quote-fetch zet all_ok = False; de aanroeper
+        houdt dan zijn watermerk vast.
         """
         outcome = Outcome()
 
@@ -331,6 +350,12 @@ class SalesbuildrClient:
                 f"[{log_prefix}] Opportunity {opportunity_id} | "
                 f"externalId {opportunity.get('externalIdentifier')}"
             )
+
+            # statusId 'lost' in SB = altijd Lost, ongeacht de quote — geen quote-fetch nodig.
+            if opportunity.get("statusId") == "lost":
+                outcome.lost.append(opportunity)
+                self.logger.info(f"[{opportunity_id}] LOST — Opportunity-status 'lost' in SalesBuildr")
+                continue
 
             try:
                 quote_obj = self.get_primary_quote(opportunity_id)
@@ -342,7 +367,7 @@ class SalesbuildrClient:
             if quote_obj is not None:
                 company = quote_obj.get("company") or {}
                 self.logger.info(
-                    f"[{log_prefix}] Quote {quote_obj.get('id')} (nr {quote_obj.get('number')}) | "
+                    f"[{log_prefix}] Quote {quote_obj.get('id')} (SB-offertenummer {quote_obj.get('number')}) | "
                     f"status '{quote_obj.get('status')}' | klant '{company.get('name')}'"
                 )
 
@@ -366,11 +391,19 @@ class SalesbuildrClient:
 def resolve_afas_line_item(line: dict, sb: SalesbuildrClient, category_parent_map: dict, diensten_main_category_id: str):
     """Bepaalt per SB-quote-regel de AFAS-itemcode (ItCd) én het regeltype (VaIt).
 
+    - abonnement (term <> 'one-time')       -> {Kind='abonnement', VaIt='3', ItemCode='',
+      Term}: ALTIJD een TXT-regel, ook als er een mpn is; nooit als artikel aangemaakt
     - mpn aanwezig                          -> {ItemCode=mpn, VaIt='2', Kind='artikel'}
     - geen mpn, hoofdcategorie = 'Diensten' -> {Kind='diensten', ItemCode=internalProductId
       (mag leeg zijn), VaIt='1'}
     - geen van beide                        -> None (regel niet naar AFAS te mappen)
     """
+    # Abonnement: QuoteItemResponseDto.term is 'one-time' (eenmalig) of een periode
+    # ('month', 'year'). Elke terugkerende regel wordt een TXT-regel, vóór de mpn-check.
+    term = str(line.get("term") or "").strip().lower()
+    if term and term != "one-time":
+        return {"ItemCode": "", "VaIt": "3", "Kind": "abonnement", "Name": line.get("name"), "Term": term}
+
     mpn = line.get("mpn")
     if mpn is not None and str(mpn).strip():
         return {"ItemCode": str(mpn).strip(), "VaIt": "2", "Kind": "artikel", "Name": line.get("name")}
@@ -383,6 +416,18 @@ def resolve_afas_line_item(line: dict, sb: SalesbuildrClient, category_parent_ma
         return {"ItemCode": item_code, "VaIt": "1", "Kind": "diensten", "Name": line.get("name")}
 
     return None
+
+
+def get_line_supplier_name(line: dict) -> Optional[str]:
+    """Leveranciersnaam van een quote-regel (supplier.name), getrimd; None als er geen is.
+
+    Wordt via mapping-leveranciers.xml naar de AFAS-crediteurcode vertaald (Flow 3).
+    """
+    supplier = line.get("supplier") or {}
+    name = supplier.get("name")
+    if name is None or not str(name).strip():
+        return None
+    return str(name).strip()
 
 
 def get_afas_artikelgroep(category: Optional[dict], artikelgroep_map: dict, category_parent_map: dict):

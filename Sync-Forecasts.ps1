@@ -43,7 +43,8 @@
         v0.6 [2026-10-10] : Flow 3 maakt de voorcalculatie niet meer aan maar werkt de
                             bestaande hoofd-voorcalculatie bij (PUT, regels @Action=insert);
                             idempotent via Forecast-status. Flow 2 stuurt BiSt/AdSr mee
-                            (Voorraad/Serienummer uit mapping-artikelgroepen.xml)
+                            (Voorraad uit mapping-artikelgroepen.xml, Serienummer uit
+                            SB product.isSerialized)
 #>
 
 [CmdletBinding()]param()
@@ -197,7 +198,7 @@ function ConvertFrom-ForecastExternalId {
     #   afas-Forecast-{forecast}-{volgnummer}-{verkooprelatie}
     # Die codeert alles wat Flow 2 nodig heeft om ZONDER re-fetch van de AFAS
     # Forecast verder te kunnen:
-    #   ForecastId = uniek AFAS forecast-id  -> QuId (voorcalc-offertenr)
+    #   ForecastId = uniek AFAS forecast-id  -> Get-AfasForecast (status/idempotentie)
     #   SqNo       = volgnummer              -> CmForecast @SqNo / KnQuotation FcNo
     #   PrId       = verkooprelatie          -> CmForecast @PrId / KnQuotation DbId
     # Geeft $null bij een onverwacht formaat — de aanroeper slaat het record dan
@@ -303,9 +304,12 @@ function Invoke-AfasGetConnectorFiltered {
     # LET OP datumformaat: AFAS accepteert 'yyyy-MM-ddTHH:mm(:ss)' in LOKALE tijd.
     # Een trailing 'Z' (UTC-aanduiding) veroorzaakt een serverfout ("0Z" -> Integer),
     # en een datum zónder tijdcomponent faalt eveneens. Dus GEEN ToUniversalTime en GEEN 'Z'.
+    # Optioneel -StatusCode: extra server-side filter statusCode = waarde (operatortypes=1).
+    # Meerdere AFAS-filters komma-gescheiden in één filtergroep = AND.
     param(
         [string]$Connector,
-        [datetime]$SinceDate
+        [datetime]$SinceDate,
+        [string]$StatusCode
     )
 
     $result   = @()
@@ -313,9 +317,18 @@ function Invoke-AfasGetConnectorFiltered {
     $take     = 100
     $sinceStr = $SinceDate.ToString("yyyy-MM-ddTHH:mm:ss")
 
+    $fieldIds  = 'gewijzigd'
+    $values    = [uri]::EscapeDataString($sinceStr)
+    $operators = '4'
+    if (-not [string]::IsNullOrWhiteSpace($StatusCode)) {
+        $fieldIds  += ',statusCode'
+        $values    += ',' + [uri]::EscapeDataString($StatusCode)
+        $operators += ',1'
+    }
+
     do {
         $url      = "$($Global:AfasRestUrl)/connectors/$($Connector)?skip=$skip&take=$take" +
-                    "&filterfieldids=gewijzigd&filtervalues=$([uri]::EscapeDataString($sinceStr))&operatortypes=4"
+                    "&filterfieldids=$fieldIds&filtervalues=$values&operatortypes=$operators"
         $response = Invoke-RestMethod -Uri $url -Headers $Global:AfasHeaders -Method Get
         $result  += $response.rows
         $skip    += $take
@@ -326,12 +339,12 @@ function Invoke-AfasGetConnectorFiltered {
 
 function Get-AfasQuotation {
     # Controleert of een AFAS-quotation (voorcalculatie) al bestaat in AFAS door
-    # te filteren op offerte (= QuId = AFAS forecast-id). Bevestigd filterveld:
+    # te filteren op offerte (= QuId = SB-offertenummer, bijv. "2026-00380"). Bevestigd filterveld:
     # 'offerte' in Salesbuildr_Voorcalculatie (operatortypes=1 = equal).
     # Geeft het eerste gevonden record terug, of $null als het niet bestaat.
     param(
         [string]$Connector,
-        [string]$OfferteNr    # QuId = AFAS forecast-id, bijv. "11310"
+        [string]$OfferteNr    # QuId = SB-offertenummer, bijv. "2026-00380"
     )
 
     $url      = "$($Global:AfasRestUrl)/connectors/$($Connector)" +
@@ -388,30 +401,6 @@ function Get-AfasArtikelByItemCode {
     return $null
 }
 
-function Get-AfasInkooprelatie {
-    # Herleidt een SalesBuildr-leverancier (supplier.externalIdentifier) naar de AFAS
-    # inkooprelatie, via de Salesbuildr_DebiteurenCrediteuren GetConnector, server-side
-    # gefilterd op Nummer (operatortypes=1 = gelijk aan). De SB-vendor-externalId komt
-    # overeen met AFAS 'Nummer'; we geven de bijbehorende 'Inkooprelatie' terug (bijv.
-    # "50029"), of $null als er geen (matchende) rij is of de Inkooprelatie leeg is.
-    # Gebruikt in Flow 3 om per artikelregel het vrije veld U69BD7B0B... te vullen.
-    param(
-        [string]$Connector,
-        [string]$Nummer      # = SB supplier.externalIdentifier
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Nummer)) { return $null }
-
-    $url      = "$($Global:AfasRestUrl)/connectors/$($Connector)" +
-                "?filterfieldids=Nummer&filtervalues=$([uri]::EscapeDataString($Nummer))&operatortypes=1&skip=0&take=1"
-    $response = Invoke-RestMethod -Uri $url -Headers $Global:AfasHeaders -Method Get
-
-    if ($response.rows.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$response.rows[0].Inkooprelatie)) {
-        return [string]$response.rows[0].Inkooprelatie
-    }
-    return $null
-}
-
 function Get-AfasQuotationAttachment {
     # Controleert of er al een PDF-bijlage (dossieritem) bij een AFAS-quotation hangt,
     # via de Salesbuildr_Dossieritems GetConnector, server-side gefilterd op
@@ -422,7 +411,7 @@ function Get-AfasQuotationAttachment {
     # (de KnSubject-POST is niet idempotent). Geeft $true als de bijlage bestaat.
     param(
         [string]$Connector,
-        [string]$OfferteNr,     # QuId = AFAS forecast-id, bijv. "11311"
+        [string]$OfferteNr,     # QuId = SB-offertenummer, bijv. "2026-00380"
         [int]$SubjectType       # StId / dossieritemtype (bijv. 46)
     )
 
@@ -460,7 +449,7 @@ function New-AfasArtikel {
     #   BiUn = besteleenheid, voorlopig "St" (stuks)
     #   VaRc = voorlopig "2"
     #   BiSt = voorraad bijhouden       — per hoofdcategorie uit mapping-artikelgroepen.xml (Voorraad)
-    #   AdSr = administratie serienummers — per hoofdcategorie uit mapping-artikelgroepen.xml (Serienummer)
+    #   AdSr = administratie serienummers — uit het SB-product (isSerialized)
     param(
         [string]$Connector,
         [string]$ItemCode,
@@ -502,14 +491,14 @@ function New-AfasSubjectAttachment {
     #   StId = dossieritemtype (uit config, bijv. 46)
     #   UsId = AFAS-gebruiker (uit config, bijv. "53307._sa_salesbldr")
     #   Da   = huidige datum/tijd (yyyy-MM-ddTHH:mm)
-    #   KnSubjectLink.QuId = AFAS forecast-id (= Offerte), SfId = verkooprelatie
+    #   KnSubjectLink.QuId = voorcalculatie-/offertenummer (= SB-offertenummer), SfId = verkooprelatie
     param(
         [string]$Connector,
         [int]$SubjectType,          # StId / dossieritemtype (bijv. 46)
         [string]$UserId,            # UsId — AFAS-gebruiker
-        [string]$ForecastId,        # QuId = AFAS forecast-id (KnSubjectLink.QuId)
+        [string]$OfferteNr,         # QuId = SB-offertenummer (KnSubjectLink.QuId)
         [string]$Verkooprelatie,    # SfId — verkooprelatie
-        [string]$FileName,          # bestandsnaam incl. extensie (bijv. "SB-Offerte-11311.pdf")
+        [string]$FileName,          # bestandsnaam incl. extensie (bijv. "SB-Offerte-2026-00380.pdf")
         [string]$FileStreamBase64   # Base64 van de PDF-bytes
     )
 
@@ -518,7 +507,7 @@ function New-AfasSubjectAttachment {
             Element = @{
                 Fields = @{
                     StId = $SubjectType
-                    Ds   = "SB Offerte - $ForecastId"
+                    Ds   = "SB Offerte - $OfferteNr"
                     Da   = (Get-Date -Format "yyyy-MM-ddTHH:mm")
                     UsId = $UserId
                 }
@@ -530,7 +519,7 @@ function New-AfasSubjectAttachment {
                                     ToSR = $true
                                     SfTp = 4
                                     SfId = $Verkooprelatie
-                                    QuId = $ForecastId
+                                    QuId = $OfferteNr
                                 }
                             }
                         }
@@ -550,7 +539,7 @@ function New-AfasSubjectAttachment {
         }
     }
 
-    Write-Log INFO "Dossieritem (KnSubject) aanmaken in AFAS: '$FileName' bij offerte $ForecastId / verkooprelatie $Verkooprelatie"
+    Write-Log INFO "Dossieritem (KnSubject) aanmaken in AFAS: '$FileName' bij offerte $OfferteNr / verkooprelatie $Verkooprelatie"
     Invoke-AfasUpdateConnector -Connector $Connector -Body $body
 }
 
@@ -613,7 +602,7 @@ function Close-AfasForecast {
     # Element-niveau staan (@PrId/@SqNo), NIET in Fields.
     #
     # Vaste velden:
-    #   ViRe = "00" (altijd), DaSc = sluitdatum (voorlopig huidige datum).
+    #   ViSt = "5" (altijd), ViRe = "00" (altijd), DaSc = sluitdatum (voorlopig huidige datum).
     #   OrAF = totale offertebedrag — ALLEEN bij Won (G); bij Lost (N) weggelaten.
     param(
         [string]$Connector,
@@ -624,6 +613,7 @@ function Close-AfasForecast {
     )
 
     $fields = @{
+        ViSt = "5"
         ViOp = $ViOp
         ViRe = "00"
         DaSc = (Get-Date -Format "yyyy-MM-dd")
@@ -651,6 +641,7 @@ function ConvertTo-AfasQuotationBody {
     param(
         [string]$QuId,
         [string]$Ds,
+        [string]$PoNumber,
         [array]$Regels
     )
 
@@ -663,18 +654,25 @@ function ConvertTo-AfasQuotationBody {
         if ($_.Kind -eq 'txt') {
             # === TXT-regel (VaIt=3): Diensten-item dat NIET in AFAS bestaat ===
             # Ds bevat de SB-info (omschrijving + aantal + prijs + kostprijs), max 255 tekens.
-            # ItCd = "SBO" (vaste AFAS text-item-code); geen aantallen/bedragen op de regel zelf.
-            $txtDs = "{0} - aantal {1}, prijs {2}, kostprijs {3}" -f `
+            # ItCd = "SBO" (vaste AFAS text-item-code), of "SBA" voor abonnementen (Regel.ItemCode);
+            # geen aantallen/bedragen op de regel zelf.
+            # Abonnement (Termijn gezet): prijs en kostprijs zijn per periode -> "per maand"/"per jaar".
+            $per = if ([string]::IsNullOrWhiteSpace($_.Termijn)) { '' }
+                   elseif ($_.Termijn -eq 'month') { ' per maand' }
+                   elseif ($_.Termijn -eq 'year')  { ' per jaar' }
+                   else { " per $($_.Termijn)" }
+            $txtDs = "{0} - aantal {1}, prijs {2}{4}, kostprijs {3}{4}" -f `
                 $_.Tekst, `
                 ([double]$_.Aantal).ToString($inv), `
                 ([double]$_.Prijs).ToString($inv), `
-                ([double]$_.Kostprijs).ToString($inv)
+                ([double]$_.Kostprijs).ToString($inv), `
+                $per
             if ($txtDs.Length -gt 255) { $txtDs = $txtDs.Substring(0, 255) }
-            @{
+            $txtLine = @{
                 Fields = @{
                     "@Action" = "insert"
                     VaIt = "3"
-                    ItCd = "SBO"
+                    ItCd = if ($_.ItemCode) { $_.ItemCode } else { "SBO" }
                     Ds   = $txtDs
                     UnId = ""
                     QuUn = ""
@@ -684,6 +682,12 @@ function ConvertTo-AfasQuotationBody {
                     AmCo = ""
                 }
             }
+            # Ook een TXT-regel met een gemapte leverancier draagt de crediteurvelden.
+            if (-not [string]::IsNullOrWhiteSpace($_.CredCode)) {
+                $txtLine.Fields.U69BD7B0B402F2007FEC9E485BB4B59C9 = $_.CredCode
+                $txtLine.Fields.UC61B5DF54390117579CF9AA289E985F0 = $true
+            }
+            $txtLine
         }
         else {
             $isWerksoort = ($_.Soort -eq '1')
@@ -699,32 +703,42 @@ function ConvertTo-AfasQuotationBody {
                 # Werksoorten hebben ALTIJD kostprijs 0; artikelen dragen hun eigen kostprijs.
                 AmCo = if ($isWerksoort) { "0" } else { ([double]$_.Kostprijs).ToString($inv) }
             }
+            # Ds = shortDescription van de SB-quoteregel, alleen als gevuld (max 255 tekens);
+            # anders weglaten zodat AFAS de standaardomschrijving van het item gebruikt.
+            if (-not [string]::IsNullOrWhiteSpace($_.Omschrijving)) {
+                $regelDs = [string]$_.Omschrijving
+                if ($regelDs.Length -gt 255) { $regelDs = $regelDs.Substring(0, 255) }
+                $fields.Ds = $regelDs
+            }
             # Werksoort-regel (VaIt=1) draagt een extra veld StId = "N".
             if ($isWerksoort) { $fields.StId = "N" }
-            # Artikelregel (VaIt=2) draagt twee vrije velden:
-            #   UC61B5DF54390117579CF9AA289E985F0 = altijd true (ja)
-            #   U69BD7B0B402F2007FEC9E485BB4B59C9 = AFAS-inkooprelatie van de leverancier;
-            #     alleen meesturen als die herleid kon worden (anders veld weglaten).
-            else {
+            # Regel met een gemapte leverancier (mapping-leveranciers.xml) draagt twee vrije velden:
+            #   U69BD7B0B402F2007FEC9E485BB4B59C9 = AFAS-crediteurcode van de leverancier
+            #   UC61B5DF54390117579CF9AA289E985F0 = true
+            # Geen (gemapte) leverancier -> beide velden weglaten.
+            if (-not [string]::IsNullOrWhiteSpace($_.CredCode)) {
+                $fields.U69BD7B0B402F2007FEC9E485BB4B59C9 = $_.CredCode
                 $fields.UC61B5DF54390117579CF9AA289E985F0 = $true
-                if (-not [string]::IsNullOrWhiteSpace($_.Inkooprelatie)) {
-                    $fields.U69BD7B0B402F2007FEC9E485BB4B59C9 = $_.Inkooprelatie
-                }
             }
             @{ Fields = $fields }
         }
     })
 
+    $headerFields = @{
+        "@Action" = "update"
+        Ds   = $Ds
+        # Vrij veld (KnQuotation-kop): vaste waarde "G".
+        U1D8B1C0045A26507C9B67995789BFF16 = "G"
+    }
+    # Vrij veld (KnQuotation-kop) = PO-nummer van de SB-quote; alleen meesturen als gevuld,
+    # zodat een lege PO een bestaande waarde in AFAS niet wist.
+    if (-not [string]::IsNullOrWhiteSpace($PoNumber)) { $headerFields.UA766A69149986338FE462D83768E24DA = $PoNumber }
+
     return @{
         KnQuotation = @{
             Element = @{
                 "@QuId" = $QuId
-                Fields  = @{
-                    "@Action" = "update"
-                    Ds   = $Ds
-                    # Vrij veld (KnQuotation-kop): vaste waarde "G".
-                    U1D8B1C0045A26507C9B67995789BFF16 = "G"
-                }
+                Fields  = $headerFields
                 Objects = @(
                     @{
                         KnQuotationLine = @{
@@ -751,6 +765,7 @@ function Update-AfasQuotation {
     #   @QuId = uniek AFAS forecast-id (Element-attribuut) = offerte in Salesbuildr_Voorcalculatie.
     #   Ds    = omschrijving (= SB-quote title), afgekapt op 100 tekens.
     #   U1D8B1C0045A26507C9B67995789BFF16 = offertestatus, vast "G".
+    #   UA766A69149986338FE462D83768E24DA = PO-nummer (= SB-quote poNumber), vrij veld, alleen als gevuld.
     #   QuDa/DbId/FcNo worden NIET meegestuurd — die staan al goed in AFAS.
     # Regel (KnQuotationLine.Element[].Fields) — drie regeltypes via VaIt:
     #   VaIt="2" ARTIKEL   : ItCd = mpn, UnId = "St", QuUn/Qu/QuSa = aantal,
@@ -759,7 +774,8 @@ function Update-AfasQuotation {
     #                        bestaat), UnId = "" (geen eenheid), QuUn/Qu/QuSa = aantal,
     #                        Upri = verkoopprijs, AmCo = "0" (werksoorten hebben ALTIJD kostprijs 0).
     #   VaIt="3" TXT       : Diensten-item dat NIET in AFAS bestaat -> tekstregel. ItCd = "SBO"
-    #                        (vaste AFAS text-item-code voor Salesbuildr-tekstregels), Ds = SB-info
+    #                        (vaste AFAS text-item-code voor Salesbuildr-tekstregels; "SBA" voor
+    #                        abonnementen, via Regel.ItemCode), Ds = SB-info
     #                        (omschrijving + aantal + prijs + kostprijs, max 255 tekens), en
     #                        UnId/QuUn/Qu/QuSa/Upri/AmCo alle leeg — een tekstregel voert geen
     #                        aantallen of bedragen.
@@ -769,10 +785,11 @@ function Update-AfasQuotation {
         [string]$Connector,
         [string]$QuId,        # AFAS forecast-id, bijv. "11310"
         [string]$Ds,          # omschrijving (= SB-quote title), afgekapt op 100 tekens
+        [string]$PoNumber,    # SB-quote poNumber -> vrij veld, weggelaten als leeg
         [array]$Regels        # array van hashtables: ItemCode, Aantal, Prijs, Kostprijs, [Soort] of { Kind='txt', Tekst, Aantal, Prijs, Kostprijs }
     )
 
-    $body = ConvertTo-AfasQuotationBody -QuId $QuId -Ds $Ds -Regels $Regels
+    $body = ConvertTo-AfasQuotationBody -QuId $QuId -Ds $Ds -PoNumber $PoNumber -Regels $Regels
 
     Write-Log INFO "AFAS-quotation bijwerken: $QuId ($($Regels.Count) regel(s) toevoegen)"
     Invoke-AfasUpdateConnector -Connector $Connector -Body $body -Method 'Put'
@@ -854,14 +871,15 @@ function Get-SalesbuildrCategoryParentMap {
 }
 
 function Get-SalesbuildrClosedOpportunities {
-    # Haalt alle Opportunities met statusId 'closed' op via paginering (size/from)
-    # en filtert client-side op sluitingsdatum closedAt > $SinceDate.
+    # Haalt alle Opportunities met statusId 'closed' of 'lost' op via paginering (size/from)
+    # en filtert client-side op sluitingsdatum > $SinceDate.
     #
     # LET OP — geen server-side datumfilter mogelijk: de SalesBuildr search-API
     # kent alleen gelijkheidsfilters ('veld:waarde', meerdere waarden met '|'),
-    # geen >/< operatoren. Vandaar het server-side statusId:closed-filter + een
-    # client-side datumfilter. 'closedAt' is de sluitingsdatum (niet 'updatedAt',
+    # geen >/< operatoren. Vandaar het server-side statusId:closed|lost-filter + een
+    # client-side datumfilter. Voor 'closed' is dat 'closedAt' (niet 'updatedAt',
     # dat bij élke wijziging verspringt); records zonder closedAt worden overgeslagen.
+    # Een 'lost'-Opportunity heeft GEEN closedAt — daar gebruiken we 'updatedAt'.
     # Paginering: bevestigd via OpenAPI — parameters zijn 'size' en 'from'.
     #
     # $CompanyIdFilter (optioneel, alleen gebruikt in TEST/mode 2): als gezet worden
@@ -877,15 +895,19 @@ function Get-SalesbuildrClosedOpportunities {
 
     do {
         $response = Invoke-SalesbuildrRequest `
-            -Uri "$($Global:SalesbuildrUri)/public-api/opportunity?filters=statusId%3Aclosed&size=$size&from=$from"
+            -Uri "$($Global:SalesbuildrUri)/public-api/opportunity?filters=statusId%3Aclosed%7Clost&size=$size&from=$from"
 
         $allResults += $response.results
         $from       += $size
     } while ($allResults.Count -lt $response.total)
 
-    # Client-side datumfilter op de sluitingsdatum 'closedAt' (OpportunityResponseDto).
+    # Client-side datumfilter op de sluitingsdatum 'closedAt' (OpportunityResponseDto), of
+    # 'updatedAt' voor 'lost' (heeft geen closedAt).
     # Cast naar [datetime] zodat de vergelijking niet afhangt van het string-formaat.
-    $filtered = $allResults | Where-Object { $_.closedAt -and ([datetime]$_.closedAt) -gt $SinceDate }
+    $filtered = $allResults | Where-Object {
+        $SluitDatum = if ($_.closedAt) { $_.closedAt } elseif ($_.statusId -eq 'lost') { $_.updatedAt } else { $null }
+        $SluitDatum -and ([datetime]$SluitDatum) -gt $SinceDate
+    }
 
     # Test-klantfilter (mode 2): beperk tot één klant op company.id (stabiele sleutel).
     if (-not [string]::IsNullOrWhiteSpace($CompanyIdFilter)) {
@@ -975,10 +997,18 @@ function Get-SalesbuildrContactByEmail {
     # resultaat client-side op een exacte (case-insensitieve) match van 'email'.
     # Geeft de ContactResponseDto terug, of $null als er geen exacte match is.
     #
+    # Met -CompanyId worden alleen contacten van díe Company geaccepteerd: hetzelfde
+    # e-mailadres kan bij meerdere companies als contact bestaan, en SalesBuildr
+    # weigert een Opportunity-upsert waarvan het contact niet bij de opportunity-company
+    # hoort ("Contact must belong to the opportunity company", HTTP 400).
+    #
     # LET OP: dit werkt alleen voor de KLANT-contactpersoon (contactId/contactExtId
     # op de Opportunity). De verantwoordelijke (owner) is een SalesBuildr *user*,
     # geen Contact — die is NIET via deze endpoint op te zoeken.
-    param([string]$Email)
+    param(
+        [string]$Email,
+        [string]$CompanyId
+    )
 
     if ([string]::IsNullOrWhiteSpace($Email)) { return $null }
 
@@ -989,8 +1019,11 @@ function Get-SalesbuildrContactByEmail {
     # De search-endpoint kan zowel een kale array als een {results:[]} object geven.
     $contacts = if ($response.results) { $response.results } else { $response }
 
-    return $contacts | Where-Object { $_.email -and $_.email.ToLower() -eq $Email.ToLower() } |
-        Select-Object -First 1
+    $found = $contacts | Where-Object { $_.email -and $_.email.ToLower() -eq $Email.ToLower() }
+    if (-not [string]::IsNullOrWhiteSpace($CompanyId)) {
+        $found = $found | Where-Object { $_.companyId -eq $CompanyId }
+    }
+    return $found | Select-Object -First 1
 }
 
 function Get-SalesbuildrPrimaryQuote {
@@ -1022,7 +1055,14 @@ function Get-SalesbuildrPrimaryQuote {
     # hangt strikt af van de status van de PRIMAIRE quote (primary:true). Een
     # goedgekeurde niet-primaire quote zou een Lost-opportunity ten onrechte als
     # Won classificeren, dus we geven uitsluitend de primary:true quote terug (of $null).
-    return $quotes | Where-Object { $_.primary -eq $true } | Select-Object -First 1
+    $primary = $quotes | Where-Object { $_.primary -eq $true } | Select-Object -First 1
+    if ($null -eq $primary) { return $null }
+
+    # LET OP: de search-endpoint (/public-api/quote?filters=...) geeft GEEN 'items' mee
+    # (bevestigd: het veld ontbreekt volledig), ook al staat het in QuoteResponseDto.
+    # Alleen GET /public-api/quote/{id} levert de quote-regels, dus de primaire quote
+    # altijd volledig ophalen — anders lijkt elke quote 0 regels te hebben.
+    return Invoke-SalesbuildrRequest -Uri "$($Global:SalesbuildrUri)/public-api/quote/$($primary.id)"
 }
 
 function Get-SalesbuildrQuotePdf {
@@ -1062,6 +1102,7 @@ function Split-ClosedOpportunities {
     #
     #   Won  : opportunity closed  +  primaire quote status == 'approved'
     #   Lost : opportunity closed  +  geen primaire quote, of status != 'approved'
+    #          OF opportunity statusId 'lost' (quote wordt dan niet opgehaald)
     #
     # Een ontbrekende/niet-goedgekeurde quote is GEEN fout — het is een geldige Lost-uitkomst.
     # Een écht mislukte quote-fetch (netwerk/API) zet AllOk = $false; de aanroeper houdt dan
@@ -1090,6 +1131,13 @@ function Split-ClosedOpportunities {
         $OpportunityId = $Opportunity.id
         Write-Log INFO "[$LogPrefix] Opportunity $OpportunityId | externalId $($Opportunity.externalIdentifier)"
 
+        # statusId 'lost' in SalesBuildr = altijd Lost, ongeacht de quote — geen quote-fetch nodig.
+        if ($Opportunity.statusId -eq 'lost') {
+            $Lost += $Opportunity
+            Write-Log INFO "[$OpportunityId] LOST — Opportunity-status 'lost' in SalesBuildr"
+            continue
+        }
+
         # Primaire quote via de quote-endpoint gefilterd op opportunity.id (OpportunityResponseDto
         # heeft geen quoteId-veld — dit is de enige manier).
         try {
@@ -1101,7 +1149,7 @@ function Split-ClosedOpportunities {
         }
 
         if ($null -ne $Quote) {
-            Write-Log INFO "[$LogPrefix] Quote $($Quote.id) (nr $($Quote.number)) | status '$($Quote.status)' | klant '$($Quote.company.name)'"
+            Write-Log INFO "[$LogPrefix] Quote $($Quote.id) (SB-offertenummer $($Quote.number)) | status '$($Quote.status)' | klant '$($Quote.company.name)'"
         }
 
         if ($null -ne $Quote -and $Quote.status -eq 'approved') {
@@ -1197,29 +1245,35 @@ function Get-SalesbuildrProductInternalId {
     return $null
 }
 
-function Get-SalesbuildrLineVendorExternalId {
-    # Herleidt de leverancier-externalId van een quote-regel via het PRODUCT:
-    #   regel.product.id -> Get-SalesbuildrProductById -> product.vendor (SB company-id
-    #   van de leverancier) -> Get-SalesbuildrCompanyById -> company.externalIdentifier.
-    # Die externalIdentifier is het AFAS-'Nummer' waarmee Get-AfasInkooprelatie de
-    # inkooprelatie opzoekt (Flow 3). Zowel het product als de company worden gecachet.
-    # LET OP: de inline quote-regel draagt GEEN product.vendor, vandaar de product-fetch.
-    # $null als er geen product, geen vendor of geen externalIdentifier op de vendor is.
+function Get-SalesbuildrProductIsSerialized {
+    # Leest het product-veld 'isSerialized' van het aan de regel gekoppelde product
+    # (stuurt AdSr bij het aanmaken van een artikel in Flow 2). De inline quote-regel
+    # draagt dit veld NIET, dus altijd het volledige product ophalen (gecachet via
+    # Get-SalesbuildrProductById). Geen product / veld leeg (nullable) -> $false.
     param($Line)
 
-    if ($null -eq $Line.product -or [string]::IsNullOrWhiteSpace($Line.product.id)) { return $null }
+    if ($null -eq $Line.product -or [string]::IsNullOrWhiteSpace($Line.product.id)) { return $false }
 
     $Product = Get-SalesbuildrProductById -ProductId $Line.product.id
-    if ($null -eq $Product -or [string]::IsNullOrWhiteSpace([string]$Product.vendor)) { return $null }
+    if ($null -eq $Product -or $null -eq $Product.isSerialized) { return $false }
 
-    $Vendor = Get-SalesbuildrCompanyById -Id ([string]$Product.vendor)
-    if ($null -eq $Vendor -or [string]::IsNullOrWhiteSpace([string]$Vendor.externalIdentifier)) { return $null }
+    return [bool]$Product.isSerialized
+}
 
-    return ([string]$Vendor.externalIdentifier).Trim()
+function Get-SalesbuildrLineSupplierName {
+    # Leveranciersnaam van een quote-regel (QuoteItemResponseDto.supplier.name), getrimd;
+    # $null als de regel geen leverancier heeft. Wordt via mapping-leveranciers.xml
+    # ($LeverancierMap) naar de AFAS-crediteurcode vertaald (Flow 3).
+    param($Line)
+
+    if ($null -eq $Line.supplier -or [string]::IsNullOrWhiteSpace([string]$Line.supplier.name)) { return $null }
+    return ([string]$Line.supplier.name).Trim()
 }
 
 function Resolve-AfasLineItem {
     # Bepaalt per SB-quote-regel de AFAS-itemcode (ItCd) én het regeltype (VaIt):
+    #   - abonnement (term <> 'one-time')       -> Kind = 'abonnement', ALTIJD een TXT-regel
+    #     (VaIt = "3"), ook als er een mpn is; wordt nooit als artikel aangemaakt (Flow 2)
     #   - mpn aanwezig                          -> ItCd = mpn, VaIt = "2" (artikel)
     #   - geen mpn, hoofdcategorie = 'Diensten' -> Kind = 'diensten', ItCd = internalProductId
     #     (mag leeg zijn); of de regel een werksoort (VaIt=1) of een TXT-regel wordt, hangt af
@@ -1229,6 +1283,13 @@ function Resolve-AfasLineItem {
     # Diensten-items worden NOOIT in AFAS aangemaakt: bestaat internalProductId in AFAS dan
     # wordt het een werksoort-regel, anders een TXT-regel (opportunity wordt niet overgeslagen).
     param($Line, $CategoryParentMap, [string]$DienstenMainCategoryId)
+
+    # Abonnement: QuoteItemResponseDto.term is 'one-time' (eenmalig) of een periode
+    # ('month', 'year'). Elke terugkerende regel wordt een TXT-regel, vóór de mpn-check.
+    $Term = ([string]$Line.term).Trim().ToLower()
+    if ($Term -and $Term -ne 'one-time') {
+        return [pscustomobject]@{ ItemCode = ''; VaIt = '3'; Kind = 'abonnement'; Name = $Line.name; Term = $Term }
+    }
 
     if (-not [string]::IsNullOrWhiteSpace($Line.mpn)) {
         return [pscustomobject]@{ ItemCode = ([string]$Line.mpn).Trim(); VaIt = '2'; Kind = 'artikel'; Name = $Line.name }
@@ -1429,8 +1490,6 @@ try {
     # Flow 4 — dossieritems; fallback op de bekende namen zodat oudere configs blijven werken.
     $ConnDossierGet     = if ([string]::IsNullOrWhiteSpace($config.afas.connectors.dossieritems_get)) { 'Salesbuildr_Dossieritems' } else { $config.afas.connectors.dossieritems_get }  # Salesbuildr_Dossieritems
     $ConnSubjectUpdate  = if ([string]::IsNullOrWhiteSpace($config.afas.connectors.subject_update)) { 'KnSubject' } else { $config.afas.connectors.subject_update }  # KnSubject
-    # Flow 3 — leverancier -> inkooprelatie; fallback op de bekende naam.
-    $ConnDebCredGet     = if ([string]::IsNullOrWhiteSpace($config.afas.connectors.debcred_get)) { 'Salesbuildr_DebiteurenCrediteuren' } else { $config.afas.connectors.debcred_get }  # Salesbuildr_DebiteurenCrediteuren
 
     # Mapping SalesBuildr HOOFDcategorie -> AFAS artikelgroep (Grp), uit
     # mapping-artikelgroepen.xml. Alleen hoofdcategorieën worden gemapt: een quote-regel
@@ -1441,21 +1500,33 @@ try {
     # bij het aanmaken van ontbrekende artikels.
     $ArtikelgroepMap     = @{}   # SB hoofdcategorie.id -> AFAS artikelgroep-code (Grp)
     $ArtikelgroepNaamMap = @{}   # SB hoofdcategorie.id -> AFAS artikelgroep-omschrijving (naam, alleen voor logging)
-    # Per hoofdcategorie ook de artikel-vlaggen voor FbItemArticle: Voorraad -> BiSt,
-    # Serienummer -> AdSr. Ontbrekend/leeg/onbekend -> false.
-    $ArtikelVlaggenMap   = @{}   # SB hoofdcategorie.id -> @{ Voorraad = [bool]; Serienummer = [bool] }
+    # Per hoofdcategorie ook de artikel-vlag voor FbItemArticle: Voorraad -> BiSt.
+    # Ontbrekend/leeg/onbekend -> false. (AdSr komt uit het SB-product: isSerialized.)
+    $ArtikelVlaggenMap   = @{}   # SB hoofdcategorie.id -> @{ Voorraad = [bool] }
     $MappingXml = [xml](Get-Content "$PSScriptRoot\configs\mapping-artikelgroepen.xml" -Raw)
     foreach ($c in $MappingXml.'mapping-artikelgroepen'.categorie) {
         if ($c.'SB-maincat-id' -and -not [string]::IsNullOrWhiteSpace($c.'AFAS-id')) {
             $ArtikelgroepMap[$c.'SB-maincat-id']     = $c.'AFAS-id'
             $ArtikelgroepNaamMap[$c.'SB-maincat-id'] = $c.'AFAS-naam'
             $ArtikelVlaggenMap[$c.'SB-maincat-id']   = @{
-                Voorraad    = ConvertTo-ConfigBool -Value $c.Voorraad    -Default $false
-                Serienummer = ConvertTo-ConfigBool -Value $c.Serienummer -Default $false
+                Voorraad = ConvertTo-ConfigBool -Value $c.Voorraad -Default $false
             }
         }
     }
     Write-Log INFO "$($ArtikelgroepMap.Count) artikelgroep-mapping(s) (SB-hoofdcategorie -> Grp) geladen uit mapping-artikelgroepen.xml"
+
+    # Mapping SalesBuildr leveranciersnaam (quote-regel supplier.name) -> AFAS-crediteurcode,
+    # uit mapping-leveranciers.xml. Gebruikt in Flow 3 voor de vrije velden U69BD7B0B...
+    # (crediteurcode) en UC61B5DF... (true) op voorcalculatieregels. Hashtable-sleutels zijn
+    # hoofdletterongevoelig; alleen leveranciers met een ingevulde AFAS-cred worden opgenomen.
+    $LeverancierMap = @{}   # SB supplier.name -> AFAS-crediteurcode
+    $LeverancierXml = [xml](Get-Content "$PSScriptRoot\configs\mapping-leveranciers.xml" -Raw)
+    foreach ($l in $LeverancierXml.'mapping-leveranciers'.leverancier) {
+        if (-not [string]::IsNullOrWhiteSpace($l.'SB-naam') -and -not [string]::IsNullOrWhiteSpace($l.'AFAS-cred')) {
+            $LeverancierMap[$l.'SB-naam'.Trim()] = $l.'AFAS-cred'.Trim()
+        }
+    }
+    Write-Log INFO "$($LeverancierMap.Count) leverancier-mapping(s) (SB-leverancier -> AFAS-crediteur) geladen uit mapping-leveranciers.xml"
 
     # SB-categorieboom: alle categorieën met hun parent ophalen (GET /public-api/category)
     # zodat een quote-regel-(sub)categorie naar zijn hoofdcategorie herleid kan worden —
@@ -1483,9 +1554,10 @@ try {
         Write-Log INFO "=== Flow 1: AFAS Forecasts → SalesBuildr Opportunities ==="
         Write-Log INFO "Delta sinds: $LastForecastSync"
 
-        $AfasForecasts = Invoke-AfasGetConnectorFiltered -Connector $ConnForecastGet -SinceDate $LastForecastSync
+        # Alleen open Forecasts (statusCode O) — gesloten (G/N) Forecasts horen niet meer in SB.
+        $AfasForecasts = Invoke-AfasGetConnectorFiltered -Connector $ConnForecastGet -SinceDate $LastForecastSync -StatusCode 'O'
 
-        Write-Log INFO "$($AfasForecasts.Count) gewijzigde Forecasts gevonden"
+        Write-Log INFO "$($AfasForecasts.Count) gewijzigde open Forecasts (statusCode O) gevonden"
 
         # Batch-watermark: alleen als élke Forecast succesvol is verwerkt (of legitiem
         # overgeslagen omdat al gesloten) schuift de sync-datum op. Overgeslagen door een
@@ -1520,7 +1592,7 @@ try {
 
             # Sla over als de Opportunity al gesloten is in SalesBuildr.
             $ExistingOpportunity = Get-SalesbuildrOpportunityByExtId -ExternalId $ExternalId
-            if ($null -ne $ExistingOpportunity -and $ExistingOpportunity.statusId -eq "closed") {
+            if ($null -ne $ExistingOpportunity -and $ExistingOpportunity.statusId -in "closed", "lost") {
                 Write-Log INFO "[Flow 1] Opportunity al gesloten in SalesBuildr ($ExternalId) — overgeslagen"
                 continue
             }
@@ -1531,14 +1603,14 @@ try {
             # run het opnieuw probeert wanneer het contact wél bestaat).
             $ContactId = $null
             if (-not [string]::IsNullOrWhiteSpace($Forecast.contactpersoonMail)) {
-                $Contact = Get-SalesbuildrContactByEmail -Email $Forecast.contactpersoonMail
+                $Contact = Get-SalesbuildrContactByEmail -Email $Forecast.contactpersoonMail -CompanyId $Company.id
                 if ($null -ne $Contact) {
                     $ContactId = $Contact.id
                     Write-Log INFO "[Flow 1] Contact gevonden op $($Forecast.contactpersoonMail) (id: $ContactId)"
                 }
             }
             if ($null -eq $ContactId) {
-                Write-Log WARNING "[Flow 1] Geen SalesBuildr-contact gevonden voor Forecast '$($Forecast.forecastOmschrijving)' (e-mail '$($Forecast.contactpersoonMail)') — overgeslagen"
+                Write-Log WARNING "[Flow 1] Geen SalesBuildr-contact gevonden bij organisatie $($Forecast.organisatie) ($CompanyExtId) voor Forecast '$($Forecast.forecastOmschrijving)' (e-mail '$($Forecast.contactpersoonMail)') — overgeslagen"
                 $Flow1Complete = $false
                 continue
             }
@@ -1671,10 +1743,12 @@ try {
             $Vlaggen = $ArtikelVlaggenMap[$MainCatId]
 
             try {
+                # AdSr volgt het SB-product (isSerialized), niet de categorie-mapping.
+                $Serienummer = Get-SalesbuildrProductIsSerialized -Line $BronRegel
                 New-AfasArtikel -Connector $ConnArtikelenUpdate -ItemCode $ItemCode `
                     -Omschrijving $BronRegel.name -Artikelgroep $Artikelgroep `
-                    -Voorraad $Vlaggen.Voorraad -Serienummer $Vlaggen.Serienummer
-                Add-CreatedObject "Artikel: $ItemCode ('$($BronRegel.name)', artikelgroep $Artikelgroep, voorraad $($Vlaggen.Voorraad), serienummer $($Vlaggen.Serienummer))"
+                    -Voorraad $Vlaggen.Voorraad -Serienummer $Serienummer
+                Add-CreatedObject "Artikel: $ItemCode ('$($BronRegel.name)', artikelgroep $Artikelgroep, voorraad $($Vlaggen.Voorraad), serienummer $Serienummer)"
             } catch {
                 Write-Log ERROR "Fout bij aanmaken Artikel [$ItemCode]: $_"
                 $Flow2Complete = $false
@@ -1736,6 +1810,7 @@ try {
         $LostOpportunities = $Outcome.Lost
         $WonQuoteLines     = $Outcome.Lines
         $WonQuoteTitles    = $Outcome.Titles
+        $WonQuotes         = $Outcome.Quotes
         Write-Log INFO "Categorisatie: $($WonOpportunities.Count) Won (G), $($LostOpportunities.Count) Lost (N)"
 
         # ── Stap 3b: Regels resolven + AFAS-beschikbaarheid bepalen (alleen Won) ──
@@ -1784,33 +1859,18 @@ try {
             }
         }
 
-        # Leverancier -> AFAS-inkooprelatie (voor het vrije veld U69BD7B0B... op artikelregels).
-        # Alleen artikelregels (VaIt=2) krijgen een leverancier. De leverancier-externalId
-        # wordt per regel herleid via het product (product.vendor = SB company-id ->
-        # company.externalIdentifier = AFAS 'Nummer'); zie Get-SalesbuildrLineVendorExternalId.
-        # We onthouden per regel de gevonden externalId ($LineVendorExtId) en herleiden per
-        # UNIEKE externalId de AFAS-inkooprelatie één keer (Salesbuildr_DebiteurenCrediteuren:
-        # Nummer -> Inkooprelatie) in $InkooprelatieMap. Geen product/vendor/externalId of geen
-        # AFAS-match -> $null; het vrije veld wordt dan simpelweg weggelaten (geen skip, geen
-        # watermerk-hold) — zie afspraak "vendor-veld weglaten".
-        $LineVendorExtId  = @{}   # regel.id -> leverancier-externalId (of $null)
-        foreach ($Line in $AllWonLines) {
-            $Res = $LineResolution[$Line.id]
-            if ($Res -and $Res.Kind -eq 'artikel') {
-                $LineVendorExtId[$Line.id] = Get-SalesbuildrLineVendorExternalId -Line $Line
-            }
-        }
-
-        $InkooprelatieMap = @{}
-        $VendorExtIds = @($LineVendorExtId.Values |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
-        foreach ($VendorExtId in $VendorExtIds) {
-            $Inkooprelatie = Get-AfasInkooprelatie -Connector $ConnDebCredGet -Nummer $VendorExtId
-            $InkooprelatieMap[$VendorExtId] = $Inkooprelatie
-            if ($null -eq $Inkooprelatie) {
-                Write-Log WARNING "[Flow 3] Leverancier (Nummer $VendorExtId) niet gevonden in $ConnDebCredGet of zonder inkooprelatie — vrij veld inkooprelatie wordt weggelaten op regels met deze leverancier"
+        # Leverancier -> AFAS-crediteurcode (vrije velden U69BD7B0B... + UC61B5DF... op
+        # ELKE regel met een leverancier, ook TXT-regels), via supplier.name van de quote-regel en
+        # mapping-leveranciers.xml ($LeverancierMap). Een niet-gemapte leverancier is GEEN
+        # fout: WARNING (één keer per naam), beide velden worden op die regels weggelaten
+        # (geen skip, geen watermerk-hold).
+        $SupplierNames = @($AllWonLines | ForEach-Object { Get-SalesbuildrLineSupplierName -Line $_ } |
+            Where-Object { $_ } | Sort-Object -Unique)
+        foreach ($SupplierName in $SupplierNames) {
+            if ($LeverancierMap.ContainsKey($SupplierName)) {
+                Write-Log INFO "[Flow 3] Leverancier '$SupplierName' -> AFAS-crediteur $($LeverancierMap[$SupplierName])"
             } else {
-                Write-Log INFO "[Flow 3] Leverancier (Nummer $VendorExtId) -> inkooprelatie $Inkooprelatie"
+                Write-Log WARNING "[Flow 3] Leverancier '$SupplierName' niet gemapt in mapping-leveranciers.xml — crediteurvelden worden weggelaten op regels met deze leverancier"
             }
         }
 
@@ -1856,14 +1916,19 @@ try {
                 continue
             }
 
-            # Precondiitie: de hoofd-voorcalculatie wordt in AFAS aangemaakt en moet dus al
-            # bestaan (filter op offerte = forecast-id). Zo niet: overslaan, Forecast blijft
-            # open, watermerk vastgehouden voor herkansing.
-            if ($null -eq (Get-AfasQuotation -Connector $ConnVoorcalcGet -OfferteNr $ForecastKey.ForecastId)) {
-                Write-Log WARNING "[$OpportunityId] Hoofd-voorcalculatie ($($ForecastKey.ForecastId)) bestaat niet in AFAS — overgeslagen (Forecast blijft open), watermerk vastgehouden"
+            # Voorcalculatienummer in AFAS = SB-offertenummer (QuoteResponseDto.number),
+            # bijv. "2026-00380".
+            $VoorcalcId = [string]$WonQuotes[$OpportunityId].number
+            if ([string]::IsNullOrWhiteSpace($VoorcalcId)) {
+                Write-Log WARNING "[$OpportunityId] Primaire SB-quote heeft geen offertenummer — voorcalculatienummer onbekend, overgeslagen, watermerk vastgehouden"
                 $Flow3Complete = $false
                 continue
             }
+
+            # De hoofd-voorcalculatie wordt in AFAS aangemaakt. We controleren NIET vooraf of
+            # hij bestaat: de PUT KnQuotation hieronder werkt hem "blind" bij. Faalt die PUT, dan
+            # wordt PAS DAN gecontroleerd of hij bestaat: zo niet -> WARNING, anders ERROR met
+            # de AFAS-melding (Forecast blijft open, watermerk vastgehouden).
 
             # Elke regel moet naar een AFAS-item te mappen zijn (artikel via mpn, of een
             # Diensten-regel via internalProductId) én — voor artikelen — beschikbaar zijn.
@@ -1880,7 +1945,7 @@ try {
                 if ($null -eq $Res) {
                     $Probleemregels += "regel '$($Line.name)' (geen mpn en niet in hoofdcategorie Diensten)"
                 }
-                elseif ($Res.Kind -ne 'diensten' -and $FailedItemCodes -contains $Res.ItemCode) {
+                elseif ($Res.Kind -eq 'artikel' -and $FailedItemCodes -contains $Res.ItemCode) {
                     $Probleemregels += "$($Res.Kind) '$($Res.ItemCode)' (niet beschikbaar in AFAS)"
                 }
             }
@@ -1896,8 +1961,31 @@ try {
                 # QuoteItemResponseDto: 'quantity', 'price' = verkoopprijs p/st (Upri),
                 # 'cost' = kostprijs p/st (AmCo).
                 $Res = $LineResolution[$Line.id]
+                # shortDescription (omschrijving op de SB-quoteregel) gaat — indien gevuld —
+                # als Ds mee op de voorcalculatieregel; anders de regelnaam (TXT) of de
+                # AFAS-standaardomschrijving van het item (werksoort/artikel, Ds weggelaten).
+                $KorteOmschrijving = if ([string]::IsNullOrWhiteSpace($Line.shortDescription)) { $null } else { ([string]$Line.shortDescription).Trim() }
+                $RegelTekst = if ($KorteOmschrijving) { $KorteOmschrijving } else { $Line.name }
+                # AFAS-crediteurcode van de leverancier (mapping-leveranciers.xml), of $null ->
+                # ConvertTo-AfasQuotationBody laat de crediteurvelden dan weg. Geldt voor ELKE
+                # regelsoort (artikel, werksoort en TXT).
+                $SupplierName  = Get-SalesbuildrLineSupplierName -Line $Line
+                $RegelCredCode = if ($SupplierName -and $LeverancierMap.ContainsKey($SupplierName)) { $LeverancierMap[$SupplierName] } else { $null }
 
-                if ($Res.Kind -eq 'diensten') {
+                if ($Res.Kind -eq 'abonnement') {
+                    # === Abonnement -> ALTIJD TXT-regel, met de termijn in de omschrijving ===
+                    $Regels += @{
+                        Kind      = 'txt'
+                        ItemCode  = 'SBA'
+                        Tekst     = $RegelTekst
+                        Aantal    = $Line.quantity
+                        Prijs     = $Line.price
+                        Kostprijs = $Line.cost
+                        Termijn   = $Res.Term
+                        CredCode  = $RegelCredCode
+                    }
+                }
+                elseif ($Res.Kind -eq 'diensten') {
                     # Diensten-regel: bestaat internalProductId in AFAS -> werksoort-regel
                     # (VaIt=1, ItCd = internalProductId); anders (leeg of onbekend in AFAS)
                     # -> TXT-regel (geen ItCd, de regelnaam gaat mee als tekst).
@@ -1907,52 +1995,66 @@ try {
                         $Regels += @{
                             ItemCode  = $Res.ItemCode
                             Soort     = '1'
+                            Omschrijving = $KorteOmschrijving
                             Aantal    = $Line.quantity
                             Prijs     = $Line.price
                             Kostprijs = $Line.cost
+                            CredCode  = $RegelCredCode
                         }
                     }
                     else {
                         # === TXT-regel ===
                         $Regels += @{
                             Kind      = 'txt'
-                            Tekst     = $Line.name
+                            Tekst     = $RegelTekst
                             Aantal    = $Line.quantity
                             Prijs     = $Line.price
                             Kostprijs = $Line.cost
+                            CredCode  = $RegelCredCode
                         }
                     }
                 }
                 else {
                     # Artikel (mpn, VaIt=2). ItemCode/Soort komen uit de resolutie.
-                    # Inkooprelatie (uit stap 3b, kan $null zijn -> veld wordt in
-                    # ConvertTo-AfasQuotationBody weggelaten) hangt aan de leverancier van de regel,
-                    # herleid via het product (product.vendor -> company.externalIdentifier).
-                    $VendorExtId = $LineVendorExtId[$Line.id]
                     $Regels += @{
                         ItemCode      = $Res.ItemCode
                         Soort         = $Res.VaIt
+                        Omschrijving  = $KorteOmschrijving
                         Aantal        = $Line.quantity
                         Prijs         = $Line.price
                         Kostprijs     = $Line.cost
-                        Inkooprelatie = if (-not [string]::IsNullOrWhiteSpace($VendorExtId)) { $InkooprelatieMap[$VendorExtId] } else { $null }
+                        CredCode      = $RegelCredCode
                     }
                 }
             }
 
             if ($AfasWritesOnHold3) {
-                Write-Log WARNING "[ON HOLD] [$OpportunityId] AFAS-quotation ($($ForecastKey.ForecastId)) zou bijgewerkt worden met $($Regels.Count) regel(s) — niet bijgewerkt. Payload: $(ConvertTo-AfasQuotationBody -QuId $ForecastKey.ForecastId -Ds $WonQuoteTitles[$OpportunityId] -Regels $Regels | ConvertTo-Json -Depth 10 -Compress)"
+                Write-Log WARNING "[ON HOLD] [$OpportunityId] AFAS-quotation ($VoorcalcId) zou bijgewerkt worden met $($Regels.Count) regel(s) — niet bijgewerkt. Payload: $(ConvertTo-AfasQuotationBody -QuId $VoorcalcId -Ds $WonQuoteTitles[$OpportunityId] -PoNumber $WonQuotes[$OpportunityId].poNumber -Regels $Regels | ConvertTo-Json -Depth 10 -Compress)"
             }
             else {
                 try {
                     Update-AfasQuotation `
                         -Connector $ConnVoorcalcUpdate `
-                        -QuId      $ForecastKey.ForecastId `
+                        -QuId      $VoorcalcId `
                         -Ds        $WonQuoteTitles[$OpportunityId] `
+                        -PoNumber  $WonQuotes[$OpportunityId].poNumber `
                         -Regels    $Regels
-                    Add-CreatedObject "AFAS-quotation bijgewerkt: offerte $($ForecastKey.ForecastId) (Forecast SqNo $($ForecastKey.SqNo), $($Regels.Count) regel(s) toegevoegd)"
+                    Add-CreatedObject "AFAS-quotation bijgewerkt: offerte $VoorcalcId (Forecast $($ForecastKey.ForecastId), SqNo $($ForecastKey.SqNo), $($Regels.Count) regel(s) toegevoegd)"
                 } catch {
-                    Write-Log ERROR "[$OpportunityId] Fout bij bijwerken AFAS-quotation: $_"
+                    # AFAS zet de foutomschrijving in de response-body (ErrorDetails); val terug
+                    # op de exception-tekst als die ontbreekt.
+                    $AfasError = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { "$_" }
+                    # De AFAS-foutmelding zegt niet eenduidig WAT er niet bestaat ("bestaat niet" kan
+                    # ook over een Itemcode op een regel gaan). Daarom pas NA een mislukte PUT
+                    # controleren of de hoofd-voorcalculatie zelf bestaat.
+                    $VoorcalcBestaat = $null
+                    try { $VoorcalcBestaat = $null -ne (Get-AfasQuotation -Connector $ConnVoorcalcGet -OfferteNr $VoorcalcId) } catch { }
+                    $RegelCodes = ($Regels | ForEach-Object { if ($_.Kind -eq 'txt') { "$(if ($_.ItemCode) { $_.ItemCode } else { 'SBO' }) (VaIt 3)" } else { "$($_.ItemCode) (VaIt $($_.Soort))" } }) -join ', '
+                    if ($VoorcalcBestaat -eq $false) {
+                        Write-Log WARNING "[$OpportunityId] Hoofd-voorcalculatie ($VoorcalcId) bestaat niet in AFAS — overgeslagen (Forecast blijft open), watermerk vastgehouden"
+                    } else {
+                        Write-Log ERROR "[$OpportunityId] Fout bij bijwerken AFAS-quotation ($VoorcalcId), regels: $RegelCodes — AFAS-melding: $AfasError"
+                    }
                     $Flow3Complete = $false
                     continue
                 }
@@ -1986,12 +2088,44 @@ try {
         # Geen artikels/voorcalc: een Lost-forecast wordt enkel afgesloten. De
         # CmForecast-sleutel (verkooprelatie/PrId + volgnummer/SqNo) parsen we uit de
         # externalIdentifier (zelfde formaat als de Won-tak) — geen re-fetch nodig.
+        # Een Opportunity zonder externalIdentifier komt niet uit AFAS (geen Forecast om te
+        # sluiten) -> INFO en overslaan, geen watermerk-hold.
+        # Idempotentie via de Forecast-status: een 'lost'-Opportunity wordt opnieuw opgehaald
+        # zodra zijn updatedAt verspringt, dus een al gesloten Forecast (G/N) slaan we over.
         foreach ($Opportunity in $LostOpportunities) {
             $OpportunityId = $Opportunity.id
+
+            if ([string]::IsNullOrWhiteSpace($Opportunity.externalIdentifier)) {
+                Write-Log INFO "[$OpportunityId] Lost-Opportunity zonder externalIdentifier (niet uit AFAS) — geen Forecast te sluiten, overgeslagen"
+                continue
+            }
 
             $ForecastKey = ConvertFrom-ForecastExternalId -ExternalIdentifier $Opportunity.externalIdentifier
             if ($null -eq $ForecastKey) {
                 Write-Log ERROR "[$OpportunityId] Onverwacht externalIdentifier-formaat '$($Opportunity.externalIdentifier)' — kan PrId/SqNo niet parsen, overgeslagen"
+                $Flow3Complete = $false
+                continue
+            }
+
+            try {
+                $AfasForecast = Get-AfasForecast -Connector $ConnForecastGet -ForecastId $ForecastKey.ForecastId
+            } catch {
+                Write-Log ERROR "[$OpportunityId] Fout bij ophalen Forecast $($ForecastKey.ForecastId) uit AFAS: $_"
+                $Flow3Complete = $false
+                continue
+            }
+            if ($null -eq $AfasForecast) {
+                Write-Log WARNING "[$OpportunityId] Forecast $($ForecastKey.ForecastId) niet gevonden in $ConnForecastGet — overgeslagen, watermerk vastgehouden"
+                $Flow3Complete = $false
+                continue
+            }
+            $StatusCode = Get-AfasForecastStatusCode -Forecast $AfasForecast
+            if ($StatusCode -in 'G', 'N') {
+                Write-Log INFO "[$OpportunityId] Forecast $($ForecastKey.ForecastId) is al gesloten (statusCode $StatusCode) — overgeslagen"
+                continue
+            }
+            if ($StatusCode -ne 'O') {
+                Write-Log WARNING "[$OpportunityId] Forecast $($ForecastKey.ForecastId) heeft onverwachte statusCode '$StatusCode' (verwacht O/G/N) — overgeslagen, watermerk vastgehouden"
                 $Flow3Complete = $false
                 continue
             }
@@ -2065,18 +2199,27 @@ try {
                 continue
             }
 
+            # Voorcalculatienummer in AFAS = SB-offertenummer (QuoteResponseDto.number),
+            # bijv. "2026-00380".
+            $VoorcalcId = [string]$Quote.number
+            if ([string]::IsNullOrWhiteSpace($VoorcalcId)) {
+                Write-Log WARNING "[$OpportunityId] Primaire SB-quote heeft geen offertenummer — voorcalculatienummer onbekend, overgeslagen, watermerk vastgehouden"
+                $Flow4Complete = $false
+                continue
+            }
+
             # Precondiitie: de AFAS-quotation moet al bestaan (Flow 3 aangemaakt). Zo niet:
             # watermerk vasthouden en later opnieuw proberen — een bijlage bij een niet-
             # bestaande offerte mag niet ontstaan.
-            if ($null -eq (Get-AfasQuotation -Connector $ConnVoorcalcGet -OfferteNr $ForecastKey.ForecastId)) {
-                Write-Log WARNING "[$OpportunityId] AFAS-quotation ($($ForecastKey.ForecastId)) bestaat nog niet — PDF nog niet gekoppeld, watermerk vastgehouden voor herkansing"
+            if ($null -eq (Get-AfasQuotation -Connector $ConnVoorcalcGet -OfferteNr $VoorcalcId)) {
+                Write-Log WARNING "[$OpportunityId] AFAS-quotation ($VoorcalcId) bestaat nog niet — PDF nog niet gekoppeld, watermerk vastgehouden voor herkansing"
                 $Flow4Complete = $false
                 continue
             }
 
             # Idempotentie: hangt de PDF er al? (Salesbuildr_Dossieritems: Offerte + Type/Ja_Nee)
-            if (Get-AfasQuotationAttachment -Connector $ConnDossierGet -OfferteNr $ForecastKey.ForecastId -SubjectType $KnSubjectStId) {
-                Write-Log INFO "[$OpportunityId] PDF-bijlage al aanwezig bij offerte $($ForecastKey.ForecastId) — overgeslagen"
+            if (Get-AfasQuotationAttachment -Connector $ConnDossierGet -OfferteNr $VoorcalcId -SubjectType $KnSubjectStId) {
+                Write-Log INFO "[$OpportunityId] PDF-bijlage al aanwezig bij offerte $VoorcalcId — overgeslagen"
                 continue
             }
 
@@ -2094,10 +2237,10 @@ try {
                 continue
             }
 
-            $FileName = "SB-Offerte-$($ForecastKey.ForecastId).pdf"
+            $FileName = "SB-Offerte-$VoorcalcId.pdf"
 
             if ($AfasWritesOnHold4) {
-                Write-Log WARNING "[ON HOLD] [$OpportunityId] Dossieritem '$FileName' zou aangemaakt worden bij offerte $($ForecastKey.ForecastId) — niet aangemaakt"
+                Write-Log WARNING "[ON HOLD] [$OpportunityId] Dossieritem '$FileName' zou aangemaakt worden bij offerte $VoorcalcId — niet aangemaakt"
                 continue
             }
 
@@ -2106,11 +2249,11 @@ try {
                     -Connector        $ConnSubjectUpdate `
                     -SubjectType      $KnSubjectStId `
                     -UserId           $KnSubjectUsId `
-                    -ForecastId       $ForecastKey.ForecastId `
+                    -OfferteNr        $VoorcalcId `
                     -Verkooprelatie   $ForecastKey.PrId `
                     -FileName         $FileName `
                     -FileStreamBase64 $PdfBase64
-                Add-CreatedObject "PDF-bijlage: '$FileName' bij offerte $($ForecastKey.ForecastId) (verkooprelatie $($ForecastKey.PrId))"
+                Add-CreatedObject "PDF-bijlage: '$FileName' bij offerte $VoorcalcId (verkooprelatie $($ForecastKey.PrId))"
             } catch {
                 Write-Log ERROR "[$OpportunityId] Fout bij aanmaken dossieritem (KnSubject): $_"
                 $Flow4Complete = $false
